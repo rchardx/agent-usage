@@ -1,3 +1,195 @@
 # agent-usage
 
 A local-first CLI for Codex and Claude Code account allowances and token usage.
+
+Reports account quota windows, automatic reset times, available reset allowances,
+credits, and detailed tokens from local transcripts. Account allowances and local
+token history have separate scopes: other devices can affect account limits,
+while this tool only counts logs available in the selected local directories.
+
+## Install
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv tool install git+https://github.com/rchardx/agent-usage
+agent-usage
+```
+
+For a development checkout:
+
+```bash
+uv sync --dev
+uv run agent-usage
+```
+
+Live adapters were verified on Linux/WSL with Codex CLI 0.160.0 and Claude Code
+2.1.289. Other versions may expose different fields. Codex must be on `PATH` for
+live account queries. Local token reports work without either CLI installed.
+
+## Commands
+
+```bash
+agent-usage                                 # Account allowances + today's local tokens
+agent-usage quota                           # Windows, resets, credits
+agent-usage --refresh quota                 # Bypass the 120-second account cache
+agent-usage --offline                       # Cached allowances + local tokens; no network
+agent-usage tokens --since 7d               # Rolling seven-day interval
+agent-usage tokens --month --by model       # Calendar month, grouped by model
+agent-usage tokens --all --by project       # Available local history, grouped by project
+agent-usage tokens --since 2026-10-01 --until 2026-10-05 --by day
+agent-usage --provider claude tokens --all  # Select one provider
+agent-usage --timezone Asia/Tokyo tokens    # Explicit reporting timezone
+agent-usage tokens --all --json             # Machine-readable report
+agent-usage --json quota                    # Global JSON flag also works
+agent-usage doctor                          # Offline discovery and parser diagnostics
+```
+
+Global options (`--provider`, `--timezone`, `--offline`, `--refresh`, `--timeout`,
+and path overrides) precede the subcommand. `tokens`, `quota`, and `doctor` also
+accept their own `--json` flag. `--until` is exclusive; dates without an offset
+use the reporting timezone, which defaults to the system timezone.
+
+The first token query builds an index; later queries read appended transcript
+bytes. `doctor` also updates this index and reports parsing issues without
+querying either account. A report can succeed while a provider is unavailable;
+automation should inspect account `status` and token `coverage`, not just the
+exit code. Invalid CLI arguments exit with code 2.
+
+## Token accounting
+
+| Normalized field | Codex source | Claude Code source |
+| --- | --- | --- |
+| Input, including cache | `input_tokens` | `input_tokens` + cache read + cache creation |
+| Fresh input | Input minus cache read/write, when both are known | `input_tokens` |
+| Cache read | `cached_input_tokens` | `cache_read_input_tokens` |
+| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens` |
+| Cache write, 5m / 1h TTL | Not currently reported | `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` |
+| Output, including reasoning | `output_tokens` | `output_tokens` |
+| Reasoning | `reasoning_output_tokens`, if present | `output_tokens_details.thinking_tokens`, if present |
+| Other output | Output minus reasoning, when known | Output minus reasoning, when known |
+| Total | Input + output | Input + output |
+
+Cache counts are components of normalized input. Reasoning is a component of
+output. TTL counts are components of cache writes. **Do not add these components
+to their parent counts again.** Tokens measure repeated request processing, not
+unique words in a conversation or current context-window occupancy.
+
+Missing fields stay unknown. Text output uses `—` for unknown and `≥…*` for the
+observed subtotal of a partially covered field. Every JSON metric includes:
+
+```json
+{
+  "tokens": null,
+  "known_tokens": 300,
+  "observed_events": 8,
+  "total_events": 10
+}
+```
+
+Here, two events lack the field. `300` is the known subtotal, not a complete total.
+When coverage is complete, `tokens` is the full value (including a genuine zero).
+The top-level JSON envelope has `schema_version: 1`.
+
+Codex cumulative snapshots are differenced within each session; repeated
+snapshots are ignored. If a cumulative counter resets, only the reported last
+request is counted for that transition and a coverage note is recorded. Replayed
+fork history before the child session's creation time is excluded. Initial
+cumulative snapshots that lack per-request attribution are marked in coverage.
+
+Claude's repeated content blocks and streaming updates are merged by request
+and message identity using monotonic component counts. Copied transcripts are
+deduplicated across files. Subagent transcripts are included. Historical events
+are not assigned to whichever account happens to be logged in today.
+
+Dates describe logged usage-event times, not server billing periods. Logs with
+missing timestamps, unsupported usage structures, or invalid counts produce
+coverage notes. Deleted logs and requests never persisted by the clients cannot
+be reconstructed; `history_complete` is always false.
+
+## Account data
+
+- **Codex:** the installed CLI's App Server `account/read` and
+  `account/rateLimits/read` methods. All returned quota buckets are retained.
+  Window duration is read from the response rather than assuming five-hour and
+  weekly windows. `rateLimitResetCredits.availableCount` is authoritative even
+  when reset detail rows are missing or capped.
+- **Claude Code:** the client-internal `GET https://api.anthropic.com/api/oauth/usage`
+  endpoint, using the existing OAuth credentials file. This is an independently
+  isolated compatibility adapter, not a public API guarantee. Legacy and unified
+  allowance views are deduplicated where their identity and values match.
+- **Credits:** provider balances, limits, usage, enabled status, and unlimited
+  status remain separate. Numeric values are retained in provider units with
+  `provider_units_unverified` until their scale is verified. No currency conversion
+  or subscription-cost estimate is inferred. A missing balance is not zero;
+  `hasCredits: false` alone does not establish a disabled billing feature.
+- **Reset:** automatic window reset times and consumable reset allowances are
+  distinct. Reset expiry details are displayed when returned. Missing reset
+  information means "not reported", not "no resets left".
+
+Account results include their source, observation time, age, and one of `ok`,
+`cached`, `stale`, or `unavailable`. Queries run concurrently with bounded
+timeouts. A failed refresh can return the last matching snapshot marked `stale`
+and accompanied by the error. A past reset timestamp is displayed as such; the
+tool does not manufacture a new zero-usage window. There is no automatic retry
+loop when a provider rate-limits queries.
+
+Quota caches are tied to the credentials file's location and metadata to avoid
+reusing a snapshot after an account switch. Without file-backed credentials,
+account caching is disabled. Claude OS-keychain credentials and automatic OAuth
+refresh are not implemented; refresh an expired login using Claude Code. Codex
+manages its own authentication through its installed App Server.
+
+## Paths and privacy
+
+Default inputs:
+
+- Codex: `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`, defaulting to
+  `~/.codex` as the home directory.
+- Claude: `$CLAUDE_CONFIG_DIR/projects`, defaulting to `~/.claude` as the home
+  directory, including nested subagent logs.
+- Cache: the platform user cache directory, typically `~/.cache/agent-usage` on
+  Linux. Override it with `--cache-dir`.
+
+```bash
+agent-usage --codex-home /path/to/.codex --claude-home /path/to/.claude tokens --all
+```
+
+The scope is the current user and selected environment. WSL does not automatically
+scan the Windows user's data. Each provider currently accepts one home directory.
+
+The tool sends no prompts, redeems no resets, purchases no credits, and does not
+write client configuration. Credentials stay in memory for the direct Claude
+request and are never saved in this tool's cache or report. HTTP redirects are
+refused so bearer credentials cannot be forwarded to another origin.
+
+The SQLite cache stores usage counters, timestamps, session identities, model
+names, source paths, and project paths, but no conversation text or authentication
+secrets. JSON reports grouped by project/session expose those local identifiers.
+Cache files are private to the user where POSIX permissions are available. The
+cache is rebuildable from retained source logs. It is not a durable archive of
+deleted sessions.
+
+Incremental reads assume append-only client logs. Inode changes, truncation,
+same-size rewrites, and modifications near the last indexed offset trigger
+reindexing. Arbitrary edits to earlier bytes followed by an append are not fully
+detected: select a fresh `--cache-dir` after manually editing transcripts. An
+unfinished final line is deferred until complete; oversized lines are reported
+and left pending instead of allocating unbounded memory.
+
+## Development
+
+```bash
+uv sync --dev
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -q
+uv build
+```
+
+Tests use synthetic transcripts and mocked account endpoints. No account or
+network credentials are required. CI checks Python 3.11 and 3.14 on Linux.
+
+References: [Codex App Server](https://learn.chatgpt.com/docs/app-server),
+[Claude status-line fields](https://code.claude.com/docs/en/statusline), and
+[Claude prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
