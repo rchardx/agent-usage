@@ -13,6 +13,7 @@ from tzlocal import get_localzone
 from . import __version__
 from .index import Index
 from .paths import Paths
+from .pricing import load_pricing
 from .render import render_quotas, render_tokens
 from .reports import envelope, period, quotas, summarize
 
@@ -46,19 +47,50 @@ class Settings:
     offline: bool
     refresh: bool
     timeout: float
+    costs: bool = True
 
 
 def token_report(
-    settings: Settings, since=None, until=None, month=False, all_time=False, by="provider"
+    settings: Settings,
+    since=None,
+    until=None,
+    month=False,
+    all_time=False,
+    by="provider",
+    today=False,
 ):
     try:
-        start, end = period(since, until, month, all_time, settings.zone)
+        start, end = period(since, until, month, all_time, settings.zone, today=today)
     except (ValueError, OverflowError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     with Index(settings.paths.cache) as index:
         coverage = index.sync(settings.paths, settings.providers)
         events = index.events(settings.paths, settings.providers)
-    return summarize(events, start, end, by, settings.zone, coverage)
+    pricing = (
+        load_pricing(
+            settings.paths.cache,
+            offline=settings.offline,
+            refresh=settings.refresh,
+            timeout=settings.timeout,
+        )
+        if settings.costs
+        else None
+    )
+    result = summarize(events, start, end, by, settings.zone, coverage, pricing)
+    result["period"]["label"] = (
+        "Today"
+        if today
+        else "This month"
+        if month
+        else "All available history"
+        if all_time
+        else "Last 30 days"
+        if since is None
+        else f"Last {since[:-1]} days"
+        if since.endswith("d")
+        else "Selected period"
+    )
+    return result
 
 
 def quota_report(settings: Settings):
@@ -104,7 +136,8 @@ def main(
     ),
     as_json: bool = typer.Option(False, "--json", help="Versioned JSON output."),
     offline: bool = typer.Option(False, help="Read cached allowances without network access."),
-    refresh: bool = typer.Option(False, help="Bypass the 120-second quota cache."),
+    refresh: bool = typer.Option(False, help="Refresh quota and models.dev pricing caches."),
+    no_cost: bool = typer.Option(False, "--no-cost", help="Skip price lookup and cost estimates."),
     timeout: float = typer.Option(10, min=0.1, max=120, help="Seconds per provider request."),
     version: bool = typer.Option(False, "--version", callback=version_callback, is_eager=True),
 ):
@@ -122,6 +155,7 @@ def main(
         offline,
         refresh,
         timeout,
+        not no_cost,
     )
     if ctx.invoked_subcommand is None:
         result = envelope(quota=quota_report(ctx.obj), tokens=token_report(ctx.obj))
@@ -140,12 +174,13 @@ def tokens(
     since: str | None = typer.Option(None, help="Rolling duration (7d), ISO date, or timestamp."),
     until: str | None = typer.Option(None, help="Exclusive end date/time; defaults to now."),
     month: bool = typer.Option(False, help="Current calendar month in the selected timezone."),
+    today: bool = typer.Option(False, help="Today in the selected timezone."),
     all_time: bool = typer.Option(False, "--all", help="All available local history."),
     by: Group = typer.Option(Group.provider, help="Group within each provider."),
     as_json: bool = typer.Option(False, "--json"),
 ):
-    """Local tokens with cache and reasoning details; defaults to today."""
-    result = token_report(ctx.obj, since, until, month, all_time, by.value)
+    """Detailed local tokens and API-equivalent cost; defaults to the last 30 days."""
+    result = token_report(ctx.obj, since, until, month, all_time, by.value, today)
     output(ctx.obj, envelope(tokens=result), as_json)
 
 

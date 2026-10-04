@@ -168,3 +168,60 @@ def test_parser_version_change_rebuilds_existing_index(paths):
         events = index.events(paths, ["codex"])
     assert coverage["files_updated"] == 1
     assert events[0]["input_tokens"] == 100
+
+
+def test_v1_index_migrates_and_reparses_request_boundaries(paths):
+    write_rows(paths.codex / "sessions/a.jsonl", [codex_meta(), codex_usage(100, 10)])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["codex"])
+        state = json.loads(index.db.execute("SELECT state FROM files").fetchone()[0])
+        state["parser_version"] = 2
+        index.db.execute("UPDATE files SET state=?", (json.dumps(state),))
+        index.db.execute("ALTER TABLE events DROP COLUMN request_input_tokens")
+        index.db.execute("PRAGMA user_version=1")
+        index.db.commit()
+    with Index(paths.cache) as index:
+        result = index.sync(paths, ["codex"])
+        events = index.events(paths, ["codex"])
+        assert index.db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert result["files_updated"] == 1
+    assert len(events) == 1
+    assert events[0]["input_tokens"] == events[0]["request_input_tokens"] == 100
+
+
+def test_codex_aggregate_delta_does_not_claim_a_single_request_size(paths):
+    second = codex_usage(220, 30, "2026-10-01T00:02:00Z")
+    second["payload"]["info"]["last_token_usage"] = {
+        "input_tokens": 50,
+        "output_tokens": 5,
+    }
+    write_rows(paths.codex / "sessions/a.jsonl", [codex_meta(), codex_usage(100, 10), second])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["codex"])
+        events = sorted(index.events(paths, ["codex"]), key=lambda e: e["timestamp"])
+    assert [e["input_tokens"] for e in events] == [100, 120]
+    assert [e["request_input_tokens"] for e in events] == [100, None]
+
+
+def test_claude_iterations_do_not_claim_a_single_request_size(paths):
+    write_rows(
+        paths.claude / "projects/main.jsonl",
+        [claude_usage(), claude_usage("iterated", iterations=[{"input_tokens": 2}])],
+    )
+    with Index(paths.cache) as index:
+        index.sync(paths, ["claude"])
+        events = index.events(paths, ["claude"])
+    assert {e["request_input_tokens"] for e in events} == {122, None}
+
+
+def test_streaming_and_copied_iteration_records_keep_request_size_unknown(paths):
+    write_rows(
+        paths.claude / "projects/main.jsonl",
+        [claude_usage(), claude_usage(iterations=[{"input_tokens": 2}])],
+    )
+    write_rows(paths.claude / "projects/copy.jsonl", [claude_usage()])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["claude"])
+        events = index.events(paths, ["claude"])
+    assert len(events) == 1
+    assert events[0]["request_input_tokens"] is None

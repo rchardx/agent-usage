@@ -18,6 +18,24 @@ from agent_usage.reports import (
 )
 
 
+def test_default_month_is_rolling_thirty_days_anchored_to_exclusive_end():
+    zone = ZoneInfo("America/New_York")
+    start, end = period(None, "2026-03-20T12:00:00-04:00", False, False, zone)
+    assert end.astimezone(UTC) - start.astimezone(UTC) == timedelta(days=30)
+    assert start.isoformat() == "2026-02-18T11:00:00-05:00"
+    assert period("30d", end.isoformat(), False, False, zone) == (start, end)
+
+
+def test_today_and_calendar_month_remain_explicit_choices():
+    zone = ZoneInfo("Asia/Tokyo")
+    start, end = period(None, None, False, False, zone, today=True)
+    assert start == end.replace(hour=0, minute=0, second=0, microsecond=0)
+    start, end = period(None, None, True, False, zone)
+    assert start == end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    with pytest.raises(ValueError, match="Choose only one"):
+        period("30d", None, False, False, zone, today=True)
+
+
 def test_codex_multi_bucket_reset_count_and_unknown_credit_unit():
     bucket = {
         "primary": {"usedPercent": 28, "windowDurationMins": 10080, "resetsAt": 1791593860},

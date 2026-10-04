@@ -84,6 +84,7 @@ class UsageEvent:
     reasoning_tokens: int | None
     cache_write_5m_tokens: int | None = None
     cache_write_1h_tokens: int | None = None
+    request_input_tokens: int | None = None
 
     # input_tokens includes all cache components; reasoning is a subset of output.
     @property

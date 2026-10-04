@@ -3,7 +3,8 @@
 A local-first CLI for Codex and Claude Code account allowances and token usage.
 
 Reports account quota windows, automatic reset times, available reset allowances,
-credits, and detailed tokens from local transcripts. Account allowances and local
+credits, detailed tokens from local transcripts, and API-equivalent cost estimates
+using [models.dev](https://models.dev/) prices. Account allowances and local
 token history have separate scopes: other devices can affect account limits,
 while this tool only counts logs available in the selected local directories.
 
@@ -23,6 +24,16 @@ uv sync --dev
 uv run agent-usage
 ```
 
+To run your checkout from any directory, install its editable command once:
+
+```bash
+uv tool install --editable /absolute/path/to/agent-usage
+agent-usage
+```
+
+Ensure the tool executable directory (`uv tool dir --bin`) is on `PATH`.
+`uv tool update-shell` can configure it for a new shell session.
+
 Live adapters were verified on Linux/WSL with Codex CLI 0.160.0 and Claude Code
 2.1.289. Other versions may expose different fields. Codex must be on `PATH` for
 live account queries. Local token reports work without either CLI installed.
@@ -30,12 +41,14 @@ live account queries. Local token reports work without either CLI installed.
 ## Commands
 
 ```bash
-agent-usage                                 # Account allowances + today's local tokens
+agent-usage                                 # Account allowances + last 30 days of local tokens
 agent-usage quota                           # Windows, resets, credits
 agent-usage --refresh quota                 # Bypass the 120-second account cache
 agent-usage --offline                       # Cached allowances + local tokens; no network
 agent-usage tokens --since 7d               # Rolling seven-day interval
+agent-usage tokens --today                  # Today from local midnight
 agent-usage tokens --month --by model       # Calendar month, grouped by model
+agent-usage --no-cost tokens                # Local token counts only; no price lookup
 agent-usage tokens --all --by project       # Available local history, grouped by project
 agent-usage tokens --since 2026-10-01 --until 2026-10-05 --by day
 agent-usage --provider claude tokens --all  # Select one provider
@@ -45,10 +58,21 @@ agent-usage --json quota                    # Global JSON flag also works
 agent-usage doctor                          # Offline discovery and parser diagnostics
 ```
 
-Global options (`--provider`, `--timezone`, `--offline`, `--refresh`, `--timeout`,
+Global options (`--provider`, `--timezone`, `--offline`, `--refresh`, `--no-cost`, `--timeout`,
 and path overrides) precede the subcommand. `tokens`, `quota`, and `doctor` also
 accept their own `--json` flag. `--until` is exclusive; dates without an offset
 use the reporting timezone, which defaults to the system timezone.
+
+The default period is a rolling **30 days**, ending now (or at `--until`), not
+the current calendar month. `--since 30d` is equivalent. Choose `--month` for the
+current calendar month or use explicit dates for a previous calendar month.
+Rolling days are exact 24-hour durations, including across daylight-saving changes.
+Only one of `--since`, `--today`, `--month`, and `--all` may be selected.
+
+Terminal output fills the available width, separates input/output sections, and
+places account panels side by side on wide terminals. Tokens use decimal
+abbreviations: **K = 1,000; M = 1,000,000; B = 1,000,000,000; T = 1,000,000,000,000**.
+JSON always retains exact integer token counts.
 
 The first token query builds an index; later queries read appended transcript
 bytes. `doctor` also updates this index and reports parsing issues without
@@ -110,6 +134,44 @@ missing timestamps, unsupported usage structures, or invalid counts produce
 coverage notes. Deleted logs and requests never persisted by the clients cannot
 be reconstructed; `history_complete` is always false.
 
+## Cost estimates
+
+By default, token reports fetch the public models.dev catalog and match exact
+model IDs under `openai` for Codex and `anthropic` for Claude Code. Explicit
+`openai/` or `anthropic/` prefixes are accepted; model aliases are not guessed.
+Prices are USD per million tokens. The catalog is cached for 24 hours;
+`--refresh` refreshes it, `--offline` uses cached prices without network access,
+and `--no-cost` skips pricing altogether. Failed refreshes retain a dated, visibly
+stale snapshot when available. `quota` and `doctor` never fetch prices.
+
+**These are estimates at current standard API prices, not subscription bills or
+credit consumption.** Historical price changes, fast/priority/batch adjustments,
+regional modifiers, tool fees, and taxes are excluded. Prices are community
+maintained and can change independently of local usage records.
+
+Costs are calculated on usage records before grouping:
+
+- Fresh input, cache reads, cache writes, and output use their respective rates.
+  Reasoning is already part of output; a separate reasoning price replaces the
+  output price for that subset only when models.dev supplies one.
+- Context price tiers use each request's input size, including cache, rather
+  than the monthly token sum. Explicit tier thresholds take precedence over the
+  catalog's legacy `context_over_200k` alias. Cumulative deltas without identifiable
+  request boundaries remain unpriced for models with context tiers.
+- Claude 5-minute cache writes use the catalog's `cache_write` rate. One-hour
+  writes use 2× the input rate, following
+  [Anthropic's cache pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+  Nonzero writes without a known TTL breakdown remain unpriced.
+- Missing models, required prices, or required usage details produce unknown
+  costs, not zero. The table shows priced-record coverage and a marked known
+  subtotal when coverage is incomplete.
+
+JSON includes `pricing` source, fetch time, status, model price tables, and
+`estimated_cost` for totals and every group. USD values are decimal strings
+rounded to six decimal places after aggregation. `amount` is null when any
+record is unpriced; `known_amount`, `known_components`, `priced_events`, and
+`unpriced_reasons` preserve the available estimate and its coverage.
+
 ## Account data
 
 - **Codex:** the installed CLI's App Server `account/read` and
@@ -164,7 +226,9 @@ scan the Windows user's data. Each provider currently accepts one home directory
 The tool sends no prompts, redeems no resets, purchases no credits, and does not
 write client configuration. Credentials stay in memory for the direct Claude
 request and are never saved in this tool's cache or report. HTTP redirects are
-refused so bearer credentials cannot be forwarded to another origin.
+refused for that request so bearer credentials cannot be forwarded to another origin.
+Pricing downloads send no credentials, model selections, token counts, or logs
+to models.dev; matching and cost calculations run locally.
 
 The SQLite cache stores usage counters, timestamps, session identities, model
 names, source paths, and project paths, but no conversation text or authentication
@@ -190,7 +254,7 @@ uv run pytest -q
 uv build
 ```
 
-Tests use synthetic transcripts and mocked account endpoints. No account or
+Tests use synthetic transcripts and mocked account/pricing endpoints. No account or
 network credentials are required. CI checks Python 3.11 and 3.14 on Linux.
 
 References: [Codex App Server](https://learn.chatgpt.com/docs/app-server),

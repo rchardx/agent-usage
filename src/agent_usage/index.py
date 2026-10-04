@@ -12,7 +12,7 @@ from .models import UsageEvent
 from .parsers import METRICS, PARSER_VERSION, parse_claude, parse_codex
 from .paths import Paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_LINE_BYTES = 32 * 1024 * 1024
 
 
@@ -24,7 +24,7 @@ class Index:
         if os.name != "nt":
             self.path.chmod(0o600)
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, SCHEMA_VERSION):
+        if version not in (0, 1, SCHEMA_VERSION):
             self.db.close()
             raise ValueError("Unsupported cache schema; use a new --cache-dir.")
         self.db.executescript("""
@@ -40,10 +40,14 @@ class Index:
                 output_tokens INTEGER NOT NULL,
                 cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER,
                 cache_write_5m_tokens INTEGER, cache_write_1h_tokens INTEGER,
+                request_input_tokens INTEGER,
                 PRIMARY KEY(path, provider, event_id)
             );
             CREATE INDEX IF NOT EXISTS event_time ON events(timestamp);
         """)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(events)")}
+        if version == 1 and "request_input_tokens" not in columns:
+            self.db.execute("ALTER TABLE events ADD COLUMN request_input_tokens INTEGER")
         self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.db.commit()
 
@@ -78,6 +82,9 @@ class Index:
         self.db.execute(
             f"INSERT INTO events ({fields}) VALUES ({placeholders}) "
             f"ON CONFLICT(path,provider,event_id) DO UPDATE SET {updates}, "
+            "request_input_tokens=CASE "
+            "WHEN events.request_input_tokens IS NULL OR excluded.request_input_tokens IS NULL "
+            "THEN NULL ELSE MAX(events.request_input_tokens,excluded.request_input_tokens) END, "
             "timestamp=MIN(events.timestamp,excluded.timestamp)",
             list(data.values()),
         )
@@ -193,6 +200,10 @@ class Index:
         self.db.row_factory = sqlite3.Row
         # Deduplicate copied/archived transcripts using provider request identities.
         columns = ",".join(f"MAX({key}) AS {key}" for key in METRICS)
+        columns += (
+            ",CASE WHEN COUNT(request_input_tokens)=COUNT(*) THEN MAX(request_input_tokens) "
+            "ELSE NULL END AS request_input_tokens"
+        )
         rows = self.db.execute(
             f"SELECT provider,event_id,MIN(session) AS session,MIN(timestamp) AS timestamp,"
             f"MIN(model) AS model,MIN(project) AS project,{columns} "

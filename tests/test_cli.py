@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 
 from conftest import claude_usage, write_rows
 from typer.testing import CliRunner
@@ -51,3 +52,20 @@ def test_bad_dates_fail_before_index_creation(paths):
 def test_mutually_exclusive_options(paths):
     result = runner.invoke(app, [*options(paths), "--offline", "--refresh", "quota"])
     assert result.exit_code == 2
+
+
+def test_default_range_and_no_cost_skip_price_lookup(paths, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Price lookup attempted")
+
+    monkeypatch.setattr("agent_usage.cli.load_pricing", forbidden)
+    result = runner.invoke(app, [*options(paths), "--no-cost", "tokens", "--json"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)["tokens"]
+    assert "pricing" not in report
+    assert "estimated_cost" not in report["totals"]
+    period = report["period"]
+    assert period["label"] == "Last 30 days"
+    assert datetime.fromisoformat(period["end_exclusive"]) - datetime.fromisoformat(
+        period["start"]
+    ) == timedelta(days=30)

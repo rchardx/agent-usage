@@ -3,6 +3,15 @@ import json
 import pytest
 
 from agent_usage.paths import Paths
+from agent_usage.pricing import Pricing
+
+
+@pytest.fixture(autouse=True)
+def offline_cli_prices(monkeypatch):
+    """CLI tests never need the public pricing service; pricing I/O has its own tests."""
+    monkeypatch.setattr(
+        "agent_usage.cli.load_pricing", lambda *args, **kwargs: Pricing({}, "unavailable")
+    )
 
 
 @pytest.fixture

@@ -1,15 +1,15 @@
 import hashlib
 import json
-import os
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .cache import write_json as save_snapshot
 from .models import AccountReport, ProbeError, utc_now
 from .parsers import METRICS
 from .paths import Paths
+from .pricing import Pricing, cost_summary
 from .providers import fetch_claude, fetch_codex
 
 
@@ -37,17 +37,6 @@ def read_snapshot(path: Path) -> dict | None:
         return data
     except (OSError, ValueError, TypeError):
         return None
-
-
-def save_snapshot(path: Path, report: dict):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary = tempfile.mkstemp(prefix=".quota-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(report, handle)
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
 
 
 def account_report(
@@ -101,35 +90,41 @@ def quotas(paths: Paths, providers: list[str], **options) -> dict:
     return {"scope": "account", "accounts": reports}
 
 
-def period(since: str | None, until: str | None, month: bool, all_time: bool, zone) -> tuple:
-    if sum((since is not None, month, all_time)) > 1:
-        raise ValueError("Choose only one of --since, --month, or --all.")
+def period(
+    since: str | None, until: str | None, month: bool, all_time: bool, zone, *, today=False
+) -> tuple:
+    if sum((since is not None, month, all_time, today)) > 1:
+        raise ValueError("Choose only one of --since, --month, --today, or --all.")
     now = datetime.now(zone)
+    end = datetime.fromisoformat(until.replace("Z", "+00:00")) if until else now
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=zone)
     if all_time:
         start = None
     elif month:
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif today:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif since:
         if since.endswith("d") and since[:-1].isdigit():
             days = int(since[:-1])
             if days < 1:
                 raise ValueError("Day count must be positive.")
-            start = now - timedelta(days=days)
+            start = (end.astimezone(UTC) - timedelta(days=days)).astimezone(zone)
         else:
             start = datetime.fromisoformat(since.replace("Z", "+00:00"))
             if start.tzinfo is None:
                 start = start.replace(tzinfo=zone)
     else:
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = datetime.fromisoformat(until.replace("Z", "+00:00")) if until else now
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=zone)
+        start = (end.astimezone(UTC) - timedelta(days=30)).astimezone(zone)
     if start is not None and start >= end:
         raise ValueError("Start must precede the exclusive end time.")
     return start, end
 
 
-def summarize(events: list[dict], start, end, by: str, zone, coverage: dict) -> dict:
+def summarize(
+    events: list[dict], start, end, by: str, zone, coverage: dict, pricing: Pricing | None = None
+) -> dict:
     selected = [
         event
         for event in events
@@ -137,6 +132,8 @@ def summarize(events: list[dict], start, end, by: str, zone, coverage: dict) -> 
         and datetime.fromisoformat(event["timestamp"]) < end
     ]
     groups: dict[tuple, list] = {}
+    if pricing is not None:
+        selected = [{**event, "_cost": pricing.estimate(event)} for event in selected]
     for event in selected:
         key = event["provider"]
         if by == "day":
@@ -146,7 +143,7 @@ def summarize(events: list[dict], start, end, by: str, zone, coverage: dict) -> 
         else:
             value = event[by]
         groups.setdefault((key, value), []).append(event)
-    return {
+    report = {
         "scope": "local-records",
         "timezone": str(zone),
         "period": {"start": start.isoformat() if start else None, "end_exclusive": end.isoformat()},
@@ -168,6 +165,25 @@ def summarize(events: list[dict], start, end, by: str, zone, coverage: dict) -> 
             ),
         },
     }
+    if pricing is not None:
+        report["pricing"] = pricing.metadata()
+        if not selected:
+            report["totals"]["estimated_cost"] = cost_summary([])
+        matches = []
+        for provider, model in sorted({(event["provider"], event["model"]) for event in selected}):
+            catalog_provider = {"codex": "openai", "claude": "anthropic"}[provider]
+            model_id = model.removeprefix(f"{catalog_provider}/")
+            match = pricing.models.get(catalog_provider, {}).get(model_id)
+            matches.append(
+                {
+                    "agent": provider,
+                    "provider": catalog_provider,
+                    "model": model,
+                    "cost_per_million_usd": match.get("cost") if match else None,
+                }
+            )
+        report["pricing"]["models"] = matches
+    return report
 
 
 def aggregate(events: list[dict]) -> dict:
@@ -189,7 +205,7 @@ def aggregate(events: list[dict]) -> dict:
             if values.get(key) is not None:
                 counts[key] += 1
                 sums[key] += values[key]
-    return {
+    result = {
         "events": len(events),
         "sessions": len({(e["provider"], e["session"]) for e in events}),
         "metrics": {
@@ -202,6 +218,9 @@ def aggregate(events: list[dict]) -> dict:
             for key in metrics
         },
     }
+    if events and "_cost" in events[0]:
+        result["estimated_cost"] = cost_summary(events)
+    return result
 
 
 def envelope(**parts: Any) -> dict:

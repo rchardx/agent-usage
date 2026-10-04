@@ -15,7 +15,7 @@ METRICS = (
     "cache_write_5m_tokens",
     "cache_write_1h_tokens",
 )
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 
 def count(value: Any) -> int | None:
@@ -119,6 +119,12 @@ def parse_codex(
         cache_read_tokens=usage.get("cached_input_tokens"),
         cache_write_tokens=usage.get("cache_write_input_tokens"),
         reasoning_tokens=usage.get("reasoning_output_tokens"),
+        request_input_tokens=input_tokens
+        if all(
+            usage.get(key) == (info.get("last_token_usage") or {}).get(key)
+            for key in ("input_tokens", "output_tokens")
+        )
+        else None,
     )
     validate(event)
     return event, warning
@@ -167,6 +173,7 @@ def parse_claude(
         reasoning_tokens=count(details.get("thinking_tokens")),
         cache_write_5m_tokens=count(creation.get("ephemeral_5m_input_tokens")),
         cache_write_1h_tokens=count(creation.get("ephemeral_1h_input_tokens")),
+        request_input_tokens=fresh + read + write if not usage.get("iterations") else None,
     )
     validate(event)
     return event, None
