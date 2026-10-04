@@ -96,6 +96,9 @@ snapshots are ignored. If a cumulative counter resets, only the reported last
 request is counted for that transition and a coverage note is recorded. Replayed
 fork history before the child session's creation time is excluded. Initial
 cumulative snapshots that lack per-request attribution are marked in coverage.
+The first session metadata record owns a Codex transcript; embedded ancestor
+metadata cannot change a child session's identity. Parser version changes
+automatically invalidate file checkpoints and rebuild the derived index.
 
 Claude's repeated content blocks and streaming updates are merged by request
 and message identity using monotonic component counts. Copied transcripts are

@@ -15,6 +15,7 @@ METRICS = (
     "cache_write_5m_tokens",
     "cache_write_1h_tokens",
 )
+PARSER_VERSION = 2
 
 
 def count(value: Any) -> int | None:
@@ -36,7 +37,12 @@ def parse_codex(
     if not isinstance(payload, dict):
         return None, None
     if row.get("type") == "session_meta":
+        # Fork transcripts can embed ancestor session_meta after their own header.
+        # Ownership belongs to the first metadata record, including after index resume.
+        if state.get("session_meta_seen"):
+            return None, None
         state.update(
+            session_meta_seen=True,
             session=payload.get("id") or payload.get("session_id") or fallback_session,
             project=payload.get("cwd", "unknown"),
             forked=bool(payload.get("forked_from_id")),

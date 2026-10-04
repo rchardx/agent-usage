@@ -131,3 +131,40 @@ def test_pending_oversized_row_does_not_inflate_issue_count(paths, monkeypatch):
         first = index.sync(paths, ["claude"])
         second = index.sync(paths, ["claude"])
     assert first["issues"]["oversized_line"] == second["issues"]["oversized_line"] == 1
+
+
+def test_codex_fork_keeps_child_identity_when_parent_metadata_is_replayed(paths):
+    path = paths.codex / "sessions/child.jsonl"
+    write_rows(
+        path,
+        [
+            codex_meta("child", forked_from_id="parent", timestamp="2026-10-01T00:02:00Z"),
+            codex_meta("parent"),
+            codex_usage(100, 10, "2026-10-01T00:03:00Z"),
+        ],
+    )
+    with Index(paths.cache) as index:
+        index.sync(paths, ["codex"])
+        with path.open("a") as handle:
+            handle.write(json.dumps(codex_meta("parent")) + "\n")
+            handle.write(json.dumps(codex_usage(220, 30, "2026-10-01T00:04:00Z")) + "\n")
+        index.sync(paths, ["codex"])
+        events = index.events(paths, ["codex"])
+    assert {event["session"] for event in events} == {"child"}
+    assert sum(event["input_tokens"] for event in events) == 220
+
+
+def test_parser_version_change_rebuilds_existing_index(paths):
+    path = paths.codex / "sessions/a.jsonl"
+    write_rows(path, [codex_meta(), codex_usage(100, 10)])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["codex"])
+        state = json.loads(index.db.execute("SELECT state FROM files").fetchone()[0])
+        state["parser_version"] = -1
+        index.db.execute("UPDATE files SET state=?", (json.dumps(state),))
+        index.db.execute("UPDATE events SET input_tokens=999")
+        index.db.commit()
+        coverage = index.sync(paths, ["codex"])
+        events = index.events(paths, ["codex"])
+    assert coverage["files_updated"] == 1
+    assert events[0]["input_tokens"] == 100

@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .models import UsageEvent
-from .parsers import METRICS, parse_claude, parse_codex
+from .parsers import METRICS, PARSER_VERSION, parse_claude, parse_codex
 from .paths import Paths
 
 SCHEMA_VERSION = 1
@@ -115,9 +115,10 @@ class Index:
         with path.open("rb") as handle, self.db:
             stat = os.fstat(handle.fileno())
             identity = f"{stat.st_dev}:{stat.st_ino}"
-            offset, state, issues = 0, {}, Counter()
+            offset, state, issues = 0, {"parser_version": PARSER_VERSION}, Counter()
             reusable = (
                 saved is not None
+                and json.loads(saved[4]).get("parser_version") == PARSER_VERSION
                 and saved[0] == identity
                 and stat.st_size >= saved[1]
                 and self.anchor(handle, saved[1]) == saved[3]
