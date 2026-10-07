@@ -1,12 +1,67 @@
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from conftest import claude_usage, write_rows
 from typer.testing import CliRunner
 
 from agent_usage.cli import app
+from agent_usage.models import AccountReport, CreditBalance, ProbeError, QuotaWindow
+from agent_usage.reports import save_snapshot, snapshot_path
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("provider,known", [("claude", "five_hour"), ("codex", "codex")])
+@pytest.mark.parametrize("command", [[], ["quota"]])
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("mode", ["offline", "cached", "failed_refresh"])
+def test_unknown_allowances_in_old_caches_never_reach_output(
+    paths, monkeypatch, provider, known, command, as_json, mode
+):
+    home = getattr(paths, provider)
+    (home / ("auth.json" if provider == "codex" else ".credentials.json")).write_text("{}")
+    report = AccountReport(
+        provider,
+        "cache",
+        observed_at=datetime.now(UTC).isoformat(),
+        windows=[
+            QuotaWindow(known, "primary", 12, None, 300),
+            QuotaWindow("iguana_necktie", "primary", 99, None),
+        ],
+        credits=[CreditBalance("future_credit", balance="100")],
+    ).to_dict()
+    path = snapshot_path(paths, provider)
+    save_snapshot(path, report)
+    before = path.read_bytes()
+
+    def fetch(*args):
+        if mode == "failed_refresh":
+            raise ProbeError("Request timed out.")
+        pytest.fail("Cache should have served this request")
+
+    monkeypatch.setattr(f"agent_usage.reports.fetch_{provider}", fetch)
+    args = [*options(paths), "--provider", provider, "--no-cost"]
+    if mode == "offline":
+        args.append("--offline")
+    elif mode == "failed_refresh":
+        args.append("--refresh")
+    if as_json:
+        args.append("--json")
+    result = runner.invoke(app, [*args, *command])
+    assert result.exit_code == 0, result.output
+    assert "iguana_necktie" not in result.output
+    assert "future_credit" not in result.output
+    assert path.read_bytes() == before
+    if as_json:
+        account = json.loads(result.output)["quota"]["accounts"][0]
+        assert [w["bucket"] for w in account["windows"]] == [known]
+        assert account["windows"][0]["used_percent"] == 12
+        assert account["credits"] == []
+        assert account["status"] == ("stale" if mode == "failed_refresh" else "cached")
+    else:
+        assert "12%" in result.output
+        assert "All models" in result.output if provider == "claude" else "Codex" in result.output
 
 
 def options(paths):

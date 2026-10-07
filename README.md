@@ -175,7 +175,8 @@ record is unpriced; `known_amount`, `known_components`, `priced_events`, and
 ## Account data
 
 - **Codex:** the installed CLI's App Server `account/read` and
-  `account/rateLimits/read` methods. All returned quota buckets are retained.
+  `account/rateLimits/read` methods. Only the recognized `codex` quota bucket
+  is reported; additional buckets with unknown semantics are filtered out.
   Window duration is read from the response rather than assuming five-hour and
   weekly windows. `rateLimitResetCredits.availableCount` is authoritative even
   when reset detail rows are missing or capped.
@@ -183,6 +184,10 @@ record is unpriced; `known_amount`, `known_components`, `priced_events`, and
   endpoint, using the existing OAuth credentials file. This is an independently
   isolated compatibility adapter, not a public API guarantee. Legacy and unified
   allowance views are deduplicated where their identity and values match.
+  Recognized windows are `five_hour`, `seven_day`, `seven_day_sonnet`,
+  `seven_day_opus`, and the unified `session` / `weekly_all` equivalents.
+  Other fields such as `iguana_necktie` are ignored, even if they contain
+  utilization or reset values. Extra usage and spend balances remain supported.
 - **Credits:** provider balances, limits, usage, enabled status, and unlimited
   status remain separate. Numeric values are retained in provider units with
   `provider_units_unverified` until their scale is verified. No currency conversion
@@ -191,6 +196,11 @@ record is unpriced; `known_amount`, `known_components`, `priced_events`, and
 - **Reset:** automatic window reset times and consumable reset allowances are
   distinct. Reset expiry details are displayed when returned. Missing reset
   information means "not reported", not "no resets left".
+
+The same recognition rules apply to terminal output, JSON, and cached snapshots.
+Unknown allowance windows and credit buckets are omitted rather than guessed
+from their identifiers or provider-supplied names. Recognized items have readable
+`label` values; JSON retains their `bucket` identifiers for machine use.
 
 Account results include their source, observation time, age, and one of `ok`,
 `cached`, `stale`, or `unavailable`. Queries run concurrently with bounded

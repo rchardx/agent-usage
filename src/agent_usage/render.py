@@ -102,7 +102,8 @@ def account_panel(account: dict, zone) -> Panel:
             used = credit["used"] if credit.get("used") is not None else "unknown"
             limit = credit["limit"] if credit.get("limit") is not None else "unknown"
             state += f" · used {used} / limit {limit}"
-        contents.append(Text(f"Credits · {credit['bucket']}    {state}"))
+        label = credit.get("label") or credit["bucket"]
+        contents.append(Text(f"Credits · {label}    {state}"))
         if any(credit.get(key) is not None for key in ("balance", "used", "limit")):
             unit = credit["unit"].replace(
                 "provider_units_unverified", "raw units; scale unverified"

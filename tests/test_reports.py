@@ -36,7 +36,7 @@ def test_today_and_calendar_month_remain_explicit_choices():
         period("30d", None, False, False, zone, today=True)
 
 
-def test_codex_multi_bucket_reset_count_and_unknown_credit_unit():
+def test_codex_recognized_bucket_reset_count_and_unknown_credit_unit():
     bucket = {
         "primary": {"usedPercent": 28, "windowDurationMins": 10080, "resetsAt": 1791593860},
         "credits": {"hasCredits": True, "unlimited": False, "balance": "123.45"},
@@ -49,9 +49,9 @@ def test_codex_multi_bucket_reset_count_and_unknown_credit_unit():
             "rateLimitResetCredits": {"availableCount": 2, "credits": []},
         },
     )
-    assert len(result.windows) == 2  # single-bucket compatibility view is not counted twice
-    assert result.windows[1].used_percent == 0
-    assert result.windows[1].resets_at is None
+    assert len(result.windows) == 1  # unknown buckets and the compatibility duplicate are excluded
+    assert result.windows[0].bucket == "codex"
+    assert result.windows[0].label == "Codex"
     assert result.resets.available_count == 2  # count may exceed returned detail rows
     assert result.credits[0].balance == "123.45"
     assert result.credits[0].unit == "provider_units_unverified"
@@ -168,9 +168,9 @@ def test_claude_legacy_and_unified_windows_are_not_duplicated():
                     "percent": 32,
                     "resets_at": "2026-10-01T05:00:00Z",
                 },
-                {"kind": "spend", "group": "monthly", "percent": 12, "resets_at": None},
+                {"kind": "seven_day_sonnet", "group": "weekly", "percent": 12, "resets_at": None},
             ],
         },
         "pro",
     )
-    assert [w.bucket for w in result.windows] == ["five_hour", "spend"]
+    assert [w.bucket for w in result.windows] == ["five_hour", "seven_day_sonnet"]

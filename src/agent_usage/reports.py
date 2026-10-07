@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .allowances import recognized_account
 from .cache import write_json as save_snapshot
 from .models import AccountReport, ProbeError, utc_now
 from .parsers import METRICS
@@ -34,8 +35,8 @@ def read_snapshot(path: Path) -> dict | None:
         if age.total_seconds() < 0:
             return None
         data["age_seconds"] = round(age.total_seconds())
-        return data
-    except (OSError, ValueError, TypeError):
+        return recognized_account(data)
+    except (OSError, ValueError, TypeError, KeyError):
         return None
 
 

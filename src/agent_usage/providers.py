@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .allowances import CREDIT_LABELS, WINDOW_LABELS
 from .models import (
     AccountReport,
     CreditBalance,
@@ -122,6 +123,8 @@ def normalize_codex(account: dict, data: dict) -> AccountReport:
     for key, bucket in sorted(
         (buckets or {}).items(), key=lambda item: (item[0] != "codex", item[0])
     ):
+        if key not in WINDOW_LABELS["codex"]:
+            continue
         report.plan = report.plan or bucket.get("planType")
         for name in ("primary", "secondary"):
             window = bucket.get(name)
@@ -133,7 +136,7 @@ def normalize_codex(account: dict, data: dict) -> AccountReport:
                         used_percent=window.get("usedPercent"),
                         resets_at=iso_time(window.get("resetsAt")),
                         duration_minutes=window.get("windowDurationMins"),
-                        label=bucket.get("limitName"),
+                        label=WINDOW_LABELS["codex"][key],
                     )
                 )
         credits = bucket.get("credits")
@@ -145,6 +148,7 @@ def normalize_codex(account: dict, data: dict) -> AccountReport:
                     has_credits=credits.get("hasCredits"),
                     unlimited=credits.get("unlimited"),
                     expires_at=iso_time(credits.get("expiresAt")),
+                    label=CREDIT_LABELS["codex"][key],
                 )
             )
     resets = data.get("rateLimitResetCredits")
@@ -201,14 +205,21 @@ def normalize_claude(data: dict, plan: str | None) -> AccountReport:
         warnings=["Uses a client-internal endpoint; compatibility is not guaranteed."],
     )
     for name, value in data.items():
-        if not isinstance(value, dict) or "utilization" not in value or name == "extra_usage":
+        if name not in WINDOW_LABELS["claude"]:
+            continue
+        if not isinstance(value, dict) or "utilization" not in value:
             continue
         if value.get("utilization") is None and value.get("resets_at") is None:
             continue
         minutes = 300 if name == "five_hour" else 10080 if name.startswith("seven_day") else None
         report.windows.append(
             QuotaWindow(
-                name, name, value.get("utilization"), iso_time(value.get("resets_at")), minutes
+                name,
+                name,
+                value.get("utilization"),
+                iso_time(value.get("resets_at")),
+                minutes,
+                label=WINDOW_LABELS["claude"][name],
             )
         )
     extra = data.get("extra_usage")
@@ -225,13 +236,20 @@ def normalize_claude(data: dict, plan: str | None) -> AccountReport:
                 if extra.get("monthly_limit") is not None
                 else None,
                 used=str(extra["used_credits"]) if extra.get("used_credits") is not None else None,
+                label=CREDIT_LABELS["claude"]["extra_usage"],
             )
         )
     spend = data.get("spend")
     if isinstance(spend, dict) and spend.get("balance") is not None:
-        report.credits.append(CreditBalance(bucket="spend", balance=str(spend["balance"])))
+        report.credits.append(
+            CreditBalance(
+                bucket="spend",
+                balance=str(spend["balance"]),
+                label=CREDIT_LABELS["claude"]["spend"],
+            )
+        )
     for limit in data.get("limits") or []:
-        if isinstance(limit, dict):
+        if isinstance(limit, dict) and limit.get("kind") in WINDOW_LABELS["claude"]:
             alias = {"session": "five_hour", "weekly_all": "seven_day"}.get(limit.get("kind"))
             reset_at = iso_time(limit.get("resets_at"))
             if alias and any(
@@ -247,6 +265,7 @@ def normalize_claude(data: dict, plan: str | None) -> AccountReport:
                     window=str(limit.get("group", "unknown")),
                     used_percent=limit.get("percent"),
                     resets_at=reset_at,
+                    label=WINDOW_LABELS["claude"][limit["kind"]],
                 )
             )
     return report

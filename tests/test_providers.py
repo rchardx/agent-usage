@@ -7,7 +7,61 @@ import urllib.error
 import pytest
 
 from agent_usage.models import ProbeError
-from agent_usage.providers import CodexRPC, NoRedirect, fetch_claude
+from agent_usage.providers import (
+    CodexRPC,
+    NoRedirect,
+    fetch_claude,
+    normalize_claude,
+    normalize_codex,
+)
+
+
+@pytest.mark.parametrize("unknown", ["iguana_necktie", "seven_day_future", "future_allowance"])
+def test_claude_ignores_unrecognized_allowances_before_parsing(unknown):
+    report = normalize_claude(
+        {
+            "five_hour": {"utilization": 0, "resets_at": None},
+            "seven_day_sonnet": {"utilization": 25, "resets_at": None},
+            "seven_day_opus": {"utilization": 50, "resets_at": None},
+            unknown: {"utilization": 90, "resets_at": "unsupported timestamp"},
+            "limits": [
+                {"kind": unknown, "percent": 90, "resets_at": "unsupported timestamp"},
+                {"kind": "weekly_all", "percent": 10, "resets_at": None},
+            ],
+        },
+        "pro",
+    )
+    assert [w.label for w in report.windows] == ["All models", "Sonnet", "Opus", "All models"]
+    assert [w.used_percent for w in report.windows] == [0, 25, 50, 10]
+    assert unknown not in json.dumps(report.to_dict())
+
+
+def test_codex_ignores_unknown_buckets_even_with_a_provider_label():
+    report = normalize_codex(
+        {},
+        {
+            "rateLimitsByLimitId": {
+                "codex": {"primary": {"usedPercent": 0}, "limitName": "internal_alias"},
+                "future_bucket": {
+                    "limitName": "Looks readable",
+                    "primary": {"resetsAt": "unsupported timestamp"},
+                    "credits": {"balance": "100"},
+                },
+            },
+        },
+    )
+    assert len(report.windows) == 1
+    assert report.windows[0].label == "Codex"
+    assert report.windows[0].used_percent == 0
+    assert report.credits == []
+    assert "internal_alias" not in json.dumps(report.to_dict())
+
+
+def test_codex_unknown_compatibility_bucket_is_filtered():
+    report = normalize_codex(
+        {}, {"rateLimits": {"limitId": "future_bucket", "primary": {"usedPercent": 50}}}
+    )
+    assert report.windows == []
 
 
 def credentials(paths, **extra):

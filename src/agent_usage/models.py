@@ -43,6 +43,7 @@ class CreditBalance:
     limit: str | None = None
     used: str | None = None
     expires_at: str | None = None
+    label: str | None = None
 
 
 @dataclass
