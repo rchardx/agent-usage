@@ -158,7 +158,9 @@ def main(
         not no_cost,
     )
     if ctx.invoked_subcommand is None:
-        result = envelope(quota=quota_report(ctx.obj), tokens=token_report(ctx.obj))
+        # Terminals get one row per day; JSON keeps provider totals for automation.
+        by = "provider" if ctx.obj.json else "day"
+        result = envelope(quota=quota_report(ctx.obj), tokens=token_report(ctx.obj, by=by))
         output(ctx.obj, result)
 
 
