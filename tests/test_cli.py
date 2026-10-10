@@ -124,3 +124,13 @@ def test_default_range_and_no_cost_skip_price_lookup(paths, monkeypatch):
     assert datetime.fromisoformat(period["end_exclusive"]) - datetime.fromisoformat(
         period["start"]
     ) == timedelta(days=30)
+
+
+def test_tokens_by_day_detail_flag(paths):
+    write_rows(paths.claude / "projects" / "p" / "s.jsonl", [claude_usage()])
+    args = [*options(paths), "--no-cost", "tokens", "--all", "--by", "day"]
+    daily = runner.invoke(app, args)
+    detail = runner.invoke(app, [*args, "--detail"])
+    assert daily.exit_code == 0 and detail.exit_code == 0, daily.output + detail.output
+    assert "by day" in daily.output and "Token breakdown" not in daily.output
+    assert "Token breakdown" in detail.output

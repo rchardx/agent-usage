@@ -50,7 +50,8 @@ agent-usage tokens --today                  # Today from local midnight
 agent-usage tokens --month --by model       # Calendar month, grouped by model
 agent-usage --no-cost tokens                # Local token counts only; no price lookup
 agent-usage tokens --all --by project       # Available local history, grouped by project
-agent-usage tokens --since 2026-10-01 --until 2026-10-05 --by day
+agent-usage tokens --since 7d --by day      # One row per day, with a usage bar
+agent-usage tokens --since 2026-10-01 --until 2026-10-05 --by day --detail
 agent-usage --provider claude tokens --all  # Select one provider
 agent-usage --timezone Asia/Tokyo tokens    # Explicit reporting timezone
 agent-usage tokens --all --json             # Machine-readable report
@@ -73,6 +74,12 @@ Terminal output fills the available width, separates input/output sections, and
 places account panels side by side on wide terminals. Tokens use decimal
 abbreviations: **K = 1,000; M = 1,000,000; B = 1,000,000,000; T = 1,000,000,000,000**.
 JSON always retains exact integer token counts.
+
+`--by day` prints one row per calendar day in the reporting timezone, with
+per-provider totals, cache hit rate (cache read ÷ input), output, cost, and a bar
+scaled to the busiest day. Days without records inside the range show as zero;
+days cut by the period boundary are marked partial. Add `--detail` for the full
+per-provider breakdown of each day.
 
 The first token query builds an index; later queries read appended transcript
 bytes. `doctor` also updates this index and reports parsing issues without
