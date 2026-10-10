@@ -41,7 +41,7 @@ live account queries. Local token reports work without either CLI installed.
 ## Commands
 
 ```bash
-agent-usage                                 # Account allowances + last 30 days of local tokens
+agent-usage                                 # Account allowances + last 30 days, by day
 agent-usage quota                           # Windows, resets, credits
 agent-usage --refresh quota                 # Bypass the 120-second account cache
 agent-usage --offline                       # Cached allowances + local tokens; no network
@@ -80,6 +80,8 @@ per-provider totals, cache hit rate (cache read ÷ input), output, cost, and a b
 scaled to the busiest day. Days without records inside the range show as zero;
 days cut by the period boundary are marked partial. Add `--detail` for the full
 per-provider breakdown of each day.
+The default `agent-usage` report uses this daily view; its JSON output keeps
+provider totals, as with `agent-usage tokens --json`.
 
 The first token query builds an index; later queries read appended transcript
 bytes. `doctor` also updates this index and reports parsing issues without

@@ -134,3 +134,20 @@ def test_tokens_by_day_detail_flag(paths):
     assert daily.exit_code == 0 and detail.exit_code == 0, daily.output + detail.output
     assert "by day" in daily.output and "Token breakdown" not in daily.output
     assert "Token breakdown" in detail.output
+
+
+def test_default_report_lists_days_but_json_keeps_provider_totals(paths):
+    write_rows(paths.claude / "projects" / "p" / "s.jsonl", [claude_usage(stamp=recent())])
+    args = [*options(paths), "--provider", "claude", "--offline", "--no-cost"]
+    terminal = runner.invoke(app, args)
+    assert terminal.exit_code == 0, terminal.output
+    assert "by day" in terminal.output and "Token breakdown" not in terminal.output
+    machine = runner.invoke(app, [*args, "--json"])
+    assert machine.exit_code == 0, machine.output
+    tokens = json.loads(machine.output)["tokens"]
+    assert tokens["group_by"] == "provider"
+    assert [group["group"] for group in tokens["groups"]] == ["claude"]
+
+
+def recent():
+    return (datetime.now(UTC) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
