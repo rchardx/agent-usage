@@ -1,5 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.console import Console, Group
@@ -163,11 +164,150 @@ def cost_text(cost: dict | None) -> str:
     return text
 
 
-def render_tokens(report: dict, console: Console):
+def merge_metrics(metrics: list[dict]) -> dict:
+    return {
+        "tokens": None
+        if any(m["tokens"] is None for m in metrics)
+        else sum(m["tokens"] for m in metrics),
+        "known_tokens": sum(m["known_tokens"] for m in metrics),
+        "observed_events": sum(m["observed_events"] for m in metrics),
+        "total_events": sum(m["total_events"] for m in metrics),
+    }
+
+
+def merge_costs(costs: list[dict]) -> dict:
+    return {
+        "amount": None
+        if any(c["amount"] is None for c in costs)
+        else str(sum(Decimal(c["amount"]) for c in costs)),
+        "known_amount": str(sum(Decimal(c["known_amount"]) for c in costs)),
+        "priced_events": sum(c["priced_events"] for c in costs),
+    }
+
+
+def cache_hit_text(read: dict, total_input: dict) -> str:
+    if not read["observed_events"] or not total_input["known_tokens"]:
+        return "—"
+    share = Decimal(read["known_tokens"]) / Decimal(total_input["known_tokens"]) * 100
+    text = f"{share:.1f}%"
+    return text if read["tokens"] is not None else f"≥{text}*"
+
+
+def bar(value: int, peak: int, width: int) -> str:
+    if value <= 0 or peak <= 0:
+        return ""
+    eighths = max(1, round(value * width * 8 / peak))
+    return "█" * (eighths // 8) + ("", "▏", "▎", "▍", "▌", "▋", "▊", "▉")[eighths % 8]
+
+
+def render_daily(report: dict, console: Console, zone) -> None:
+    groups = report["groups"]
+    providers = sorted({group["provider"] for group in groups})
+    by_day: dict[date, dict[str, dict]] = {}
+    for group in groups:
+        by_day.setdefault(date.fromisoformat(group["group"]), {})[group["provider"]] = group
+    first, last = min(by_day), max(by_day)
+    days = [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
     period = report["period"]
+    start = datetime.fromisoformat(period["start"]) if period["start"] else None
+    end = datetime.fromisoformat(period["end_exclusive"])
+    priced = "pricing" in report
+    # Optional columns are added while they fit: cache hit, output, then the bar.
+    spare = console.width - 22 - 13 * (len(providers) + 1 + priced - (len(providers) == 1))
+    show_cache = spare >= 13
+    spare -= 13 * show_cache
+    show_output = spare >= 13
+    spare -= 13 * show_output
+    bar_width = min(40, spare - 4) if spare >= 14 else 0
+
+    table = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 2), show_footer=True)
+    table.add_column("Day", footer=Text("Total", style="bold"), no_wrap=True)
+    if len(providers) > 1:
+        for provider in providers:
+            known = merge_metrics(
+                [g["metrics"]["total_tokens"] for g in groups if g["provider"] == provider]
+            )
+            table.add_column(provider.title(), footer=metric_text(known), justify="right")
+    table.add_column(
+        "Total",
+        footer=Text(metric_text(report["totals"]["metrics"]["total_tokens"]), style="bold"),
+        justify="right",
+    )
+    if show_cache:
+        table.add_column(
+            "Cache hit",
+            footer=cache_hit_text(
+                report["totals"]["metrics"]["cache_read_tokens"],
+                report["totals"]["metrics"]["input_tokens"],
+            ),
+            justify="right",
+        )
+    if show_output:
+        table.add_column(
+            "Output",
+            footer=metric_text(report["totals"]["metrics"]["output_tokens"]),
+            justify="right",
+        )
+    if priced:
+        table.add_column(
+            "USD",
+            footer=Text(cost_text(report["totals"].get("estimated_cost")), style="bold green"),
+            justify="right",
+        )
+    if bar_width:
+        table.add_column("", width=bar_width, no_wrap=True)
+
+    rows = []
+    for day in days:
+        entries = by_day.get(day, {})
+        metrics = {
+            key: merge_metrics([g["metrics"][key] for g in entries.values()])
+            for key in ("total_tokens", "cache_read_tokens", "input_tokens", "output_tokens")
+        }
+        day_start = datetime.combine(day, time(), zone)
+        day_end = datetime.combine(day + timedelta(days=1), time(), zone)
+        partial = (start is not None and day_start < start) or day_end > end
+        rows.append((day, entries, metrics, partial))
+    peak = max(row[2]["total_tokens"]["known_tokens"] for row in rows)
+    for day, entries, metrics, partial in rows:
+        cells = [Text(f"{day:%Y-%m-%d %a}" + (" ·" if partial else "  "))]
+        if len(providers) > 1:
+            for provider in providers:
+                group = entries.get(provider)
+                cells.append(metric_text(group["metrics"]["total_tokens"]) if group else "0")
+        cells.append(Text(metric_text(metrics["total_tokens"]), style="bold"))
+        if show_cache:
+            cells.append(cache_hit_text(metrics["cache_read_tokens"], metrics["input_tokens"]))
+        if show_output:
+            cells.append(metric_text(metrics["output_tokens"]))
+        if priced:
+            costs = [g["estimated_cost"] for g in entries.values() if "estimated_cost" in g]
+            cells.append(Text(cost_text(merge_costs(costs) if costs else None), style="green"))
+        if bar_width:
+            cells.append(
+                Text(bar(metrics["total_tokens"]["known_tokens"], peak, bar_width), style="cyan")
+            )
+        table.add_row(*cells, style="dim" if not entries else None)
+    console.print(table)
+    console.print()
+    notes = ["  · partial day: the selected period starts or ends within it."]
+    if bar_width:
+        notes.append("  Bars scale to the busiest day.")
+    notes.append("  Cache hit = cache read ÷ input. Use --detail for the full token breakdown.")
+    for note in notes:
+        console.print(Text(note, style="dim"))
+
+
+def render_tokens(report: dict, console: Console, zone=None, detail: bool = False):
+    period = report["period"]
+    daily = report["group_by"] == "day" and not detail and bool(report["groups"])
     console.print()
     console.rule(
-        Text(f"Local token usage · {period.get('label', 'Selected period')}", style="bold"),
+        Text(
+            f"Local token usage · {period.get('label', 'Selected period')}"
+            + (" · by day" if daily else ""),
+            style="bold",
+        ),
         align="left",
     )
     start = (
@@ -185,6 +325,9 @@ def render_tokens(report: dict, console: Console):
     price = cost_text(report["totals"].get("estimated_cost"))
     if "pricing" in report:
         summary.add_column(ratio=1)
+    average = daily and console.width >= 100
+    if average:
+        summary.add_column(ratio=1)
     summary.add_row(
         Text(f"TOTAL TOKENS\n{total}", style="bold cyan"),
         *(
@@ -193,9 +336,38 @@ def render_tokens(report: dict, console: Console):
             else []
         ),
         Text(f"SESSIONS\n{report['totals']['sessions']}", style="bold"),
+        *([daily_average(report)] if average else []),
     )
     console.print(Panel(summary, box=box.ROUNDED, border_style="dim", padding=(0, 1)))
     console.print()
+    if daily:
+        render_daily(report, console, zone or ZoneInfo(report["timezone"]))
+    else:
+        render_breakdown(report, console)
+    render_notes(report, console, daily)
+
+
+def daily_average(report: dict) -> Text:
+    period = report["period"]
+    if period["start"]:
+        span = datetime.fromisoformat(period["end_exclusive"]) - datetime.fromisoformat(
+            period["start"]
+        )
+        count = Decimal(span.total_seconds()) / 86400
+    else:
+        days = sorted(date.fromisoformat(group["group"]) for group in report["groups"])
+        count = (days[-1] - days[0]).days + 1
+    tokens = report["totals"]["metrics"]["total_tokens"]
+    average = compact_number(round(tokens["known_tokens"] / count))
+    text = average if tokens["tokens"] is not None else f"≥{average}*"
+    cost = report["totals"].get("estimated_cost")
+    if "pricing" in report and cost and cost["priced_events"]:
+        amount = Decimal(cost["amount"] or cost["known_amount"]) / count
+        text += f" · ${amount:,.2f}" if cost["amount"] is not None else f" · ≥${amount:,.2f}*"
+    return Text(f"DAILY AVERAGE\n{text}", style="bold")
+
+
+def render_breakdown(report: dict, console: Console):
     fields = (
         ("Input¹", "input_tokens"),
         ("  Fresh input", "fresh_input_tokens"),
@@ -246,6 +418,9 @@ def render_tokens(report: dict, console: Console):
         console.print()
     if not groups:
         console.print("No token records in the selected period.")
+
+
+def render_notes(report: dict, console: Console, daily: bool):
     console.print(
         Text(
             "  K / M / B / T = 10³ / 10⁶ / 10⁹ / 10¹² tokens. JSON retains exact counts.",
@@ -254,7 +429,9 @@ def render_tokens(report: dict, console: Console):
     )
     console.print(
         Text(
-            "  ¹ Input includes cache. ² Output includes reasoning. Total = input + output.",
+            "  Total = input + output; input includes cache, output includes reasoning."
+            if daily
+            else "  ¹ Input includes cache. ² Output includes reasoning. Total = input + output.",
             style="dim",
         )
     )

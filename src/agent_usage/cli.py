@@ -103,7 +103,7 @@ def quota_report(settings: Settings):
     )
 
 
-def output(settings: Settings, result: dict, as_json: bool = False):
+def output(settings: Settings, result: dict, as_json: bool = False, detail: bool = False):
     if settings.json or as_json:
         typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
         return
@@ -111,7 +111,7 @@ def output(settings: Settings, result: dict, as_json: bool = False):
     if "quota" in result:
         render_quotas(result["quota"], console, settings.zone)
     if "tokens" in result:
-        render_tokens(result["tokens"], console)
+        render_tokens(result["tokens"], console, settings.zone, detail)
     if "doctor" in result:
         console.print_json(json.dumps(result["doctor"]))
 
@@ -177,11 +177,14 @@ def tokens(
     today: bool = typer.Option(False, help="Today in the selected timezone."),
     all_time: bool = typer.Option(False, "--all", help="All available local history."),
     by: Group = typer.Option(Group.provider, help="Group within each provider."),
+    detail: bool = typer.Option(
+        False, help="With --by day, show the full breakdown instead of one row per day."
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """Detailed local tokens and API-equivalent cost; defaults to the last 30 days."""
     result = token_report(ctx.obj, since, until, month, all_time, by.value, today)
-    output(ctx.obj, envelope(tokens=result), as_json)
+    output(ctx.obj, envelope(tokens=result), as_json, detail)
 
 
 @app.command()
