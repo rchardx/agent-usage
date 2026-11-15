@@ -5,9 +5,38 @@ focused and include tests and documentation for user-visible behavior. For
 substantial changes, start with an issue defining the problem and acceptance
 criteria. See [SECURITY.md](SECURITY.md) before sharing diagnostics.
 
+## Agent workflow
+
+- Inspect the working tree and preserve unrelated changes. Keep authoritative
+  configuration and lockfiles in sync; avoid unrelated refactors and upgrades.
+- Do not inspect or copy real credentials or transcripts unless explicitly required
+  by the task. Use synthetic data for tests.
+- Do not commit, amend, rebase, push, merge, publish or change GitHub settings unless
+  requested. History rewriting and publication require an agreed plan and a private
+  recoverable backup; force-pushing is not proof that sensitive history is erased.
+- Do not post PR comments. Report progress and validation results in the task
+  conversation. Keep PR descriptions focused on changes and actual test results.
+- Report checks actually run and those not run. Local Linux checks do not verify
+  hosted macOS or Windows CI.
+
+## Code layout
+
+Modules under `src/agent_usage` have these responsibilities:
+
+- `parsers.py`: normalize usage records without persisting conversation text.
+- `index.py`: incremental checkpoints, deduplication and index recovery.
+- `pricing.py`: per-record estimates before grouping.
+- `providers.py`: read-only account adapters.
+- `reports.py`: aggregation; `render.py`: terminal presentation.
+- `cli.py`: commands and options, with consistent terminal/JSON semantics.
+
 ## Setup and checks
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). The repository's
+`.python-version` selects Python 3.14 for local development without pinning a patch
+release. This does not raise the package's `requires-python >=3.11` requirement;
+Ruff and mypy retain their Python 3.11 compatibility targets. CI explicitly selects
+Python 3.11 or 3.14 rather than relying on the local default.
 
 ```bash
 uv sync --locked --dev
@@ -45,10 +74,12 @@ uv run --locked mypy
 uv run --locked pytest -q tests/test_pricing.py
 ```
 
-Run the complete checks before requesting merge. Tests use synthetic records and
-mock endpoints; pytest disables network sockets. Never run account queries or read
-real agent homes in tests. CI also tests the installed wheel outside the checkout
-with empty data directories and validates its JSON against the bundled schema.
+Format locally with `uv run --locked ruff format .`; CI checks must not silently
+modify files. Run the complete checks before requesting merge.
+Tests use synthetic records and mock endpoints; pytest disables network sockets.
+Never run account queries or read real agent homes in tests. CI also tests the
+installed wheel outside the checkout with empty data directories and validates
+its JSON against the bundled schema.
 Schema validation dependencies are development-only. JSON changes must update
 `src/agent_usage/schemas/report-v1.schema.json`, contract tests and synthetic
 examples as appropriate; follow [JSON compatibility rules](docs/json-interface.md).
@@ -115,12 +146,15 @@ no automatic bypass for bots.
 
 - Preserve documented CLI behavior and versioned JSON fields. Document intentional
   breaking changes rather than silently changing their meaning.
-- Never guess missing token counts, model identities or prices.
+- Never guess missing token counts, model identities or prices. Unknown is not zero.
+  Cache/reasoning counts are components of their parent counts, not additional tokens.
+  Costs are current API-equivalent estimates, not invoices. Test these invariants.
 - Parser changes that affect indexed results must invalidate the appropriate
   parser checkpoints and include incremental/deduplication regression tests.
 - Do not commit credentials, live API responses, real transcripts, account
   balances, private project paths, or usage databases. Use synthetic fixtures.
 - Secrets detectors are not privacy scrubbers. Review examples, screenshots,
   commit metadata and issue/PR content manually too.
+- Do not weaken checks or hide type errors to make CI pass.
 - Never dismiss a secret finding with a blanket baseline. Investigate it, rotate
   real credentials, and use narrowly documented false-positive exceptions only.
