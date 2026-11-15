@@ -1,42 +1,55 @@
-# Agent development instructions
+# AGENTS.md — agent-usage
 
-[CONTRIBUTING.md](CONTRIBUTING.md) defines development commands, the commit/PR
-message contract, compatibility rules and privacy requirements. These apply
-equally to human and agent contributions.
-
-## Scope and architecture
-
-- `parsers.py` normalizes synthetic/local provider records without persisting
-  conversation text.
-- `index.py` owns incremental SQLite checkpoints and cross-file deduplication.
-- `pricing.py` calculates per-record estimates before report grouping.
-- `providers.py` isolates read-only account adapters.
-- `reports.py` owns aggregation; `render.py` owns terminal presentation.
-- `cli.py` owns commands and options. Keep JSON and terminal semantics consistent.
-
-Missing data remains unknown, never an invented zero. Cache and reasoning counts
-are components, not additional parent tokens. Prices are current API-equivalent
-estimates, not invoices. Add regression tests for these invariants.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, packaging and commit/PR conventions.
+This file defines execution constraints, project boundaries and completion requirements.
 
 ## Working rules
 
-- Inspect the working tree before editing. Preserve unrelated user changes.
-- Use English for repository content and messages.
-- Keep changes focused; avoid unrelated refactors and dependency upgrades.
-- Update authoritative configuration and its lockfile together.
-- Use synthetic test records and fake credentials. Never inspect or copy a user's
-  actual credentials or transcripts unless the task explicitly requires it.
-- Do not weaken checks, add blanket secret allowlists or hide type errors to make
-  CI pass.
-- Do not commit, amend, rebase, push or change GitHub settings unless requested.
-- History rewriting and publication require an explicit agreed plan and a private
-  recoverable backup. A force-push is not proof that sensitive history is erased.
+- Read relevant files first and preserve unrelated working-tree changes.
+- Prioritize correctness and observable contracts. Use the smallest complete design
+  for current needs; avoid speculative abstractions and unrelated cleanup.
+- Use English for code, documentation, commits and PR content.
+- Ask before adding major runtime dependencies or changing runtime support.
+  Necessary implementation and validation need no repeated approval.
+- Never weaken checks, suppress type errors or add blanket secret allowlists.
+- Do not inspect real credentials or transcripts unless explicitly required by the
+  task. Never commit secrets, personal data or machine-specific paths.
+- Do not commit, rewrite history, push, merge, publish or change GitHub settings
+  unless requested. Review working-tree and staged diffs before committing.
+- Do not post PR comments. Report progress in the task conversation; keep PR
+  descriptions focused on the actual changes, rationale and validation results.
 
-## Verification
+## Project boundaries
 
-Run focused tests while implementing, then the completion commands in
-CONTRIBUTING.md. Format with `uv run --locked ruff format .`; lint and formatting
-checks should not silently modify files in CI.
+- `parsers.py` and `index.py` own normalization, checkpoints and deduplication;
+  `providers.py` isolates read-only account queries. Calculate per-record costs in
+  `pricing.py` before aggregation in `reports.py`; keep presentation in `render.py`
+  and command handling in `cli.py`.
+- Missing data stays unknown, not zero. Cache/reasoning counts are components of
+  parent counts. Costs are current API-equivalent estimates, not bills.
+- Preserve CLI behavior and the [JSON contract](docs/json-interface.md). Parser
+  changes affecting indexed results must invalidate checkpoints and test rebuilding.
+  Cache recovery must preserve source logs, credentials and unrelated snapshots.
+- `.python-version` selects the development runtime; `pyproject.toml` owns minimum
+  support and tool targets. Use uv to update dependencies and the lockfile together;
+  do not edit the lockfile manually or raise minimum versions without a reason.
 
-Report the commands actually run, their results, and checks not run. Hosted
-cross-platform CI is not verified merely because local Linux checks pass.
+## Validation
+
+For behavior, dependency, CI or tooling changes, run:
+
+```bash
+uv run --locked pre-commit run --all-files
+uv run --locked pytest -q
+git diff --check
+```
+
+For documentation-only changes, run pre-commit on the changed files and
+`git diff --check`. Follow CONTRIBUTING.md for build and installed-package checks
+when packaging changes. Update usage documentation when behavior changes.
+
+- Test public behavior with independent expectations, including failures and
+  unknown values. Use synthetic records and fake credentials, never live accounts.
+- Report only checks actually run on the final state and their limitations.
+  Local Linux checks do not verify hosted macOS or Windows CI. Preserve all required
+  checks, including `pr-message`, for dependency-bot PRs too.

@@ -5,9 +5,16 @@ focused and include tests and documentation for user-visible behavior. For
 substantial changes, start with an issue defining the problem and acceptance
 criteria. See [SECURITY.md](SECURITY.md) before sharing diagnostics.
 
+This guide owns setup and contribution conventions. [AGENTS.md](AGENTS.md) defines
+execution constraints, project boundaries and validation requirements.
+
 ## Setup and checks
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). The repository's
+`.python-version` selects Python 3.14 for local development without pinning a patch
+release. This does not raise the package's `requires-python >=3.11` requirement;
+Ruff and mypy retain their Python 3.11 compatibility targets. CI explicitly selects
+Python 3.11 or 3.14 rather than relying on the local default.
 
 ```bash
 uv sync --locked --dev
@@ -45,10 +52,13 @@ uv run --locked mypy
 uv run --locked pytest -q tests/test_pricing.py
 ```
 
-Run the complete checks before requesting merge. Tests use synthetic records and
-mock endpoints; pytest disables network sockets. Never run account queries or read
-real agent homes in tests. CI also tests the installed wheel outside the checkout
-with empty data directories and validates its JSON against the bundled schema.
+Run the complete checks for code and tooling changes before requesting merge;
+see [validation](AGENTS.md#validation) for documentation-only changes. Format
+locally with `uv run --locked ruff format .`; CI checks must not silently modify files.
+Tests use synthetic records and mock endpoints; pytest disables network sockets.
+Never run account queries or read real agent homes in tests. CI also tests the
+installed wheel outside the checkout with empty data directories and validates
+its JSON against the bundled schema.
 Schema validation dependencies are development-only. JSON changes must update
 `src/agent_usage/schemas/report-v1.schema.json`, contract tests and synthetic
 examples as appropriate; follow [JSON compatibility rules](docs/json-interface.md).
