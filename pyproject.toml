@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-usage"
+version = "0.1.0"
+description = "Local-first allowances and token usage for Codex, Claude Code, pi, and omp"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["typer>=0.16,<1", "rich>=14,<15", "platformdirs>=4,<5", "tzlocal>=5,<6"]
+
+[project.urls]
+Repository = "https://github.com/rchardx/agent-usage"
+Issues = "https://github.com/rchardx/agent-usage/issues"
+
+[project.scripts]
+agent-usage = "agent_usage.cli:app"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15,<2",
+    "pre-commit>=4,<5",
+    "pytest>=8,<10",
+    "pytest-socket>=0.7,<1",
+    "ruff>=0.12,<1",
+    "twine>=7,<8",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "scripts"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--disable-socket"

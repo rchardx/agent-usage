@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --locked --dev
+      - run: uv run --locked pre-commit run --all-files --show-diff-on-failure
+      - run: git diff --exit-code
+      - run: git diff --check
+
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.14"
+          - os: macos-latest
+            python: "3.14"
+          - os: windows-latest
+            python: "3.14"
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked --dev
+      - run: uv run --locked pytest -q
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.11"
+      - run: uv sync --locked --dev
+      - run: uv build
+      - run: uv run --locked twine check --strict dist/*
+      - name: Test installed wheel outside the source tree
+        shell: bash
+        run: |
+          wheel=("$PWD"/dist/*.whl)
+          cd "$(mktemp -d)"
+          uv run --no-project --isolated --with "${wheel[0]}" agent-usage --version
+          uv run --no-project --isolated --with "${wheel[0]}" agent-usage --help
+          uv run --no-project --isolated --with "${wheel[0]}" agent-usage \
+            --codex-home "$PWD/codex" --claude-home "$PWD/claude" \
+            --pi-home "$PWD/pi" --omp-home "$PWD/omp" --cache-dir "$PWD/cache" \
+            --offline --no-cost tokens --all --json
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install checksum-pinned Gitleaks
+        env:
+          VERSION: "8.30.1"
+          SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" # pragma: allowlist secret -- public release checksum
+        run: |
+          archive="gitleaks_${VERSION}_linux_x64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/$archive" \
+            --output "$archive"
+          printf '%s  %s\n' "$SHA256" "$archive" | sha256sum --check
+          mkdir -p gitleaks-bin
+          tar -xzf "$archive" -C gitleaks-bin gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Scan reachable history without exposing secret values
+        run: gitleaks git . --log-opts="--all" --redact=100 --no-banner
+
+  ci-ok:
+    if: always()
+    needs: [check, test, package, secrets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all checks to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            test "$result" = success || exit 1
+          done

@@ -1,0 +1,52 @@
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # pragma: allowlist secret -- public v6.0.0 commit
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: debug-statements
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: 01886c8a910c64595c47f186ca1ffc0b77fa5458 # pragma: allowlist secret -- public v1.5.0 commit
+    hooks:
+      - id: detect-secrets
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: c01a1853c19b175aee6a09f24e2ad9b748c485ad # pragma: allowlist secret -- public v0.24.1 commit
+    hooks:
+      - id: markdownlint-cli2
+        pass_filenames: false
+        types: [file]
+        files: '(\.md$|^\.markdownlint-cli2\.yaml$|^\.pre-commit-config\.yaml$)'
+  - repo: local
+    hooks:
+      - id: ruff
+        name: Ruff lint
+        entry: uv run --locked ruff check .
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run --locked ruff format --check .
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: mypy
+        name: Python type checks
+        entry: uv run --locked mypy
+        language: system
+        pass_filenames: false
+        files: '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)'
+      - id: commit-msg
+        name: Commit message
+        entry: uv run --locked python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]
