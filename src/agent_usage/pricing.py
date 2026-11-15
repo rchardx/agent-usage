@@ -16,18 +16,41 @@ SOURCE = "https://models.dev/api.json?type=all"
 CACHE_SECONDS = 86400
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 PROVIDERS = {"codex": "openai", "claude": "anthropic"}
+# First-party channels, in preference order. Gateway events whose upstream is not
+# in the catalog (for example "radius/kimi-k3") fall back to an exact model-id
+# match in these providers, so the model is priced at its own channel's rates.
+FIRST_PARTY = (
+    "anthropic",
+    "openai",
+    "google",
+    "deepseek",
+    "moonshotai",
+    "zai",
+    "xai",
+    "minimax",
+    "qwen",
+    "meta",
+    "mistralai",
+)
 MILLION = Decimal(1_000_000)
 
 
 def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None, str]:
-    """Catalog provider and model id for an agent event; explicit namespaces only."""
+    """Catalog provider and model id for an agent event; no alias guessing."""
     catalog = PROVIDERS.get(provider)
     if catalog:
         return catalog, model.removeprefix(f"{catalog}/")
     # pi/omp run many upstreams; trust only an explicit "provider/model" prefix.
     prefix, separator, rest = model.partition("/")
-    if separator and rest and prefix in models:
-        return prefix, rest
+    if separator and rest:
+        if prefix in models:
+            return prefix, rest
+        # Unknown upstream (a gateway such as radius): price the real model at
+        # its first-party channel, exact id only; gateway-only aliases stay
+        # unpriced.
+        for candidate in FIRST_PARTY:
+            if rest in models.get(candidate, {}):
+                return candidate, rest
     return None, model
 
 
@@ -100,7 +123,7 @@ class Pricing:
             parts = {
                 "fresh_input": fresh * rate(cost, "input") / MILLION,
                 "cache_read": read * rate(cost, "cache_read") / MILLION if read else Decimal(0),
-                "cache_write": self._writes(cost, event, write, provider),
+                "cache_write": self._writes(cost, event, write, event["provider"]),
             }
             output_price = rate(cost, "output")
             reasoning_price = rate(cost, "reasoning") if "reasoning" in cost else output_price
@@ -149,10 +172,12 @@ class Pricing:
         return selected
 
     @staticmethod
-    def _writes(cost: dict, event: dict, write: int, provider: str | None) -> Decimal:
+    def _writes(cost: dict, event: dict, write: int, agent: str | None) -> Decimal:
         if write == 0:
             return Decimal(0)
-        if provider != "anthropic":
+        # Only Claude Code records carry a 5m/1h TTL split; other agents' writes
+        # use the catalog cache_write (5m) rate even on the anthropic channel.
+        if agent != "claude":
             return write * rate(cost, "cache_write") / MILLION
         short = event.get("cache_write_5m_tokens")
         long = event.get("cache_write_1h_tokens")

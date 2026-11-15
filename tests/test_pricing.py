@@ -128,6 +128,46 @@ def test_tiers_use_request_size_and_explicit_threshold_not_legacy_200k_alias():
     )
 
 
+def gateway_catalog():
+    return Pricing(
+        {
+            "anthropic": {
+                "claude-opus-5-5": {
+                    "cost": {"input": 4, "output": 20, "cache_read": 0.2, "cache_write": 5}
+                }
+            },
+            "moonshotai": {
+                "kimi-k3": {"cost": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3}}
+            },
+        },
+        "live",
+        "2026-10-05T00:00:00+00:00",
+    )
+
+
+def test_unknown_upstream_falls_back_to_first_party_channel_by_exact_id():
+    pricing = gateway_catalog()
+    row = event(provider="pi", model="radius/claude-opus-5-5")
+    result = pricing.estimate(row)
+    assert result["pricing_provider"] == "anthropic"
+    assert result["model"] == "claude-opus-5-5"
+    # First-party anthropic rates, not a guessed gateway rate.
+    assert result["components"]["fresh_input"] == Decimal("1.2")
+    result = pricing.estimate(event(provider="omp", model="gateway/kimi-k3"))
+    assert result["pricing_provider"] == "moonshotai"
+    assert result["components"]["cache_read"] == Decimal("0.18")
+
+
+def test_gateway_aliases_and_unknown_ids_stay_unpriced():
+    pricing = gateway_catalog()
+    for model in ("radius/balanced", "radius/recursive/flint", "unknown/kimi-k3.9"):
+        result = pricing.estimate(event(provider="pi", model=model))
+        assert result["reason"] == "model_not_priced", model
+    # Known catalog prefixes never fall back to another channel.
+    result = pricing.estimate(event(provider="pi", model="anthropic/kimi-k3"))
+    assert result["reason"] == "model_not_priced"
+
+
 def test_missing_model_and_missing_rates_are_unknown_but_explicit_zero_is_valid():
     pricing = catalog({"input": 0, "output": 0})
     assert pricing.estimate(event(model="no-guessing"))["reason"] == "model_not_priced"

@@ -161,8 +161,14 @@ be reconstructed; `history_complete` is always false.
 By default, token reports fetch the public models.dev catalog and match exact
 model IDs under `openai` for Codex and `anthropic` for Claude Code. Explicit
 `openai/` or `anthropic/` prefixes are accepted; model aliases are not guessed.
-pi and omp models match only through their explicit `upstream/model` prefix
-(for example `deepseek/deepseek-v4-flash`); unrecognized upstreams stay unpriced.
+pi and omp models first match through their explicit `upstream/model` prefix
+(for example `deepseek/deepseek-v4-flash`). When the upstream is a gateway absent
+from the catalog (for example `radius/kimi-k3`), the model id falls back to an
+exact match in first-party channels — `anthropic`, `openai`, `google`,
+`deepseek`, `moonshotai`, `zai`, `xai`, `minimax`, `qwen`, `meta`, `mistralai`,
+in that order — so the real model is priced at its own channel's rates.
+Gateway-only aliases (such as Radius's `balanced`/`cheap` profiles) and ids with
+no exact first-party match stay unpriced.
 Prices are USD per million tokens. The catalog is cached for 24 hours;
 `--refresh` refreshes it, `--offline` uses cached prices without network access,
 and `--no-cost` skips pricing altogether. Failed refreshes retain a dated, visibly
@@ -182,10 +188,12 @@ Costs are calculated on usage records before grouping:
   than the monthly token sum. Explicit tier thresholds take precedence over the
   catalog's legacy `context_over_200k` alias. Cumulative deltas without identifiable
   request boundaries remain unpriced for models with context tiers.
-- Claude 5-minute cache writes use the catalog's `cache_write` rate. One-hour
-  writes use 2× the input rate, following
+- Claude Code 5-minute cache writes use the catalog's `cache_write` rate.
+  One-hour writes use 2× the input rate, following
   [Anthropic's cache pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
-  Nonzero writes without a known TTL breakdown remain unpriced.
+  Claude Code writes without a known TTL breakdown remain unpriced; other agents
+  record no TTL split, so their writes use the `cache_write` rate even on the
+  `anthropic` channel.
 - Missing models, required prices, or required usage details produce unknown
   costs, not zero. The table shows priced-record coverage and a marked known
   subtotal when coverage is incomplete.
