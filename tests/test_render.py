@@ -1,24 +1,44 @@
+import copy
 import io
+import re
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from rich.console import Console
 from test_pricing import catalog, event
 
-from agent_usage.render import compact_number, render_tokens, unpriced_reason_text
+from agent_usage.render import (
+    cache_hit_text,
+    compact_number,
+    cost_text,
+    metric_text,
+    numeric_cell,
+    render_tokens,
+    unpriced_reason_text,
+)
 from agent_usage.reports import summarize
 
 
 @pytest.mark.parametrize(
     ("number", "expected"),
     [
-        (0, "0"),
-        (123, "123"),
+        (0, "0.00"),
+        (1, "1.00"),
+        (123, "123.00"),
+        (1000, "1.00K"),
+        (1100, "1.10K"),
+        (1_000_000, "1.00M"),
+        (1_000_000_000, "1.00B"),
+        (1_000_000_000_000, "1.00T"),
+        (Decimal("12.3"), "12.30"),
+        (Decimal("999.995"), "1.00K"),
+        (999_994, "999.99K"),
         (1234, "1.23K"),
         (1234567, "1.23M"),
         (1234567890, "1.23B"),
         (1234567890000, "1.23T"),
-        (999999, "1M"),
+        (999999, "1.00M"),
     ],
 )
 def test_compact_token_units(number, expected):
@@ -39,7 +59,7 @@ def test_report_uses_terminal_width_and_keeps_cost_and_units_visible(width):
     stream = io.StringIO()
     render_tokens(report, Console(file=stream, width=width, color_system=None))
     text = stream.getvalue()
-    assert "1.1M" in text
+    assert "1.10M" in text
     assert "$1.97" in text
     assert "Last 30" not in text  # explicit all-history input is not relabeled
     assert max(map(len, text.splitlines())) == width
@@ -68,8 +88,8 @@ def test_daily_view_has_one_row_per_day_and_fits_width(width):
     text = render(daily_report(), width)
     rows = [line for line in text.splitlines() if line.strip().startswith("2026-10-0")]
     assert [row.split()[0] for row in rows] == ["2026-10-01", "2026-10-02", "2026-10-03"]
-    assert "2.2M" in rows[0]  # both providers merged into the day total
-    assert rows[1].split()[1:3] == ["Fri", "0"]  # empty days stay visible
+    assert "2.20M" in rows[0]  # both providers merged into the day total
+    assert rows[1].split()[1:3] == ["Fri", "0.00"]  # empty days stay visible
     assert "Token breakdown" not in text
     assert max(map(len, text.splitlines())) == width
 
@@ -89,7 +109,7 @@ def test_daily_view_lists_partial_claude_cost_as_subtotal():
     text = render(daily_report(), 200)
     first = next(line for line in text.splitlines() if line.strip().startswith("2026-10-01"))
     assert "≥$1.97*" in first
-    assert "Cache hit" in text and "60.0%" in first
+    assert "Cache hit" in text and "60.00%" in first
 
 
 @pytest.mark.parametrize("width", [60, 80, 160])
@@ -141,3 +161,103 @@ def test_detail_keeps_full_daily_breakdown():
     text = render(daily_report(), 160, detail=True)
     assert "Token breakdown" in text
     assert "DAILY AVERAGE" not in text
+
+
+@pytest.mark.parametrize(
+    ("value", "padding"),
+    [
+        ("0.00", 2),
+        ("123.00", 2),
+        ("1.00K", 1),
+        ("1.10M", 1),
+        ("1.00B", 1),
+        ("1.00T", 1),
+        ("≥1.20K*", 0),
+        ("≥12.00*", 1),
+        ("60.00%", 1),
+        ("≥60.00%*", 0),
+        ("$1.20", 2),
+        ("≥$1.20*", 1),
+        ("<$0.01", 2),
+        ("—", 2),
+    ],
+)
+def test_numeric_cells_reserve_unit_and_coverage_slots(value, padding):
+    cell = numeric_cell(value, style="green")
+    assert cell.plain == value + " " * padding
+    assert cell.style == "green"
+    if "." in value:
+        assert cell.plain.rjust(20).index(".") == 15
+
+
+def test_two_decimal_formatting_preserves_unknowns_and_partial_coverage():
+    full = {"tokens": 1200, "known_tokens": 1200, "observed_events": 1, "total_events": 1}
+    partial = {**full, "tokens": None, "total_events": 2}
+    unknown = {"tokens": None, "known_tokens": 0, "observed_events": 0, "total_events": 1}
+    assert metric_text(full) == "1.20K"
+    assert metric_text(partial) == "≥1.20K*"
+    assert metric_text(unknown) == "—"
+    denominator = {**full, "tokens": 3600, "known_tokens": 3600}
+    assert cache_hit_text(full, denominator) == "33.33%"
+    assert cache_hit_text(partial, denominator) == "≥33.33%*"
+    assert cache_hit_text(unknown, denominator) == "—"
+    assert cost_text({"priced_events": 1, "amount": "0.001000"}) == "<$0.01"
+    assert cost_text({"priced_events": 1, "amount": None, "known_amount": "1.200000"}) == "≥$1.20*"
+    assert cost_text({"priced_events": 0, "amount": None}) == "—"
+
+
+NUMBER = re.compile(r"[≥<]?\$?\d[\d,]*\.\d{2}[KMBT%]?\*?")
+
+
+def decimal_columns(line):
+    return {match.start() + match.group().index(".") for match in NUMBER.finditer(line)}
+
+
+@pytest.mark.parametrize("width", [60, 80, 120, 200])
+def test_daily_decimal_columns_align_across_rows_units_and_footer(width):
+    text = render(daily_report(), width)
+    rows = [line for line in text.splitlines() if line.strip().startswith("2026-10-0")]
+    footer = next(line for line in text.splitlines() if line.strip().startswith("Total "))
+    # A partial cost has a trailing *, an empty day has no unit, and totals have units.
+    columns = decimal_columns(rows[0])
+    assert columns and columns == decimal_columns(rows[2]) == decimal_columns(footer)
+    assert decimal_columns(rows[1]) <= columns
+    assert all(row.index("2026-") == footer.index("Total") for row in rows)
+    if width == 200:
+        assert rows[0].index("█") == rows[2].index("█")
+
+
+@pytest.mark.parametrize("width", [80, 160])
+def test_breakdown_decimals_align_across_metrics_partial_values_and_costs(width):
+    report = summarize(
+        [event(), event(event_id="unpriced", cache_read_tokens=None)],
+        None,
+        datetime(2026, 11, 1, tzinfo=UTC),
+        "provider",
+        UTC,
+        {"files": 1, "providers": {}, "issues": {}},
+        catalog(),
+    )
+    # Mix complete, partial and unknown metrics within the same numeric column.
+    text = render(report, width)
+    rows = [
+        line
+        for line in text.splitlines()
+        if line.strip().startswith(
+            ("Input¹", "Cache read", "Output²", "Reasoning", "Total ", "API estimate · USD")
+        )
+    ]
+    assert len(rows) == 6
+    assert len(set.union(*(decimal_columns(row) for row in rows))) == 1
+    assert "≥600.00K*" in text
+    assert "—" in text
+
+
+@pytest.mark.parametrize("detail", [False, True])
+def test_rendering_does_not_change_exact_json_values(detail):
+    report = daily_report()
+    before = copy.deepcopy(report)
+    render(report, 200, detail=detail)
+    assert report == before
+    assert report["totals"]["metrics"]["total_tokens"]["tokens"] == 3_300_000
+    assert report["totals"]["estimated_cost"]["known_amount"] == "3.940000"
