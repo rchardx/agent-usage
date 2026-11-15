@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["typer>=0.16,<1", "rich>=15.0.0,<16", "platformdirs>=4,<5", "tzlocal>=5,<6"]
+dependencies = ["typer>=0.16,<1", "rich>=14,<16", "platformdirs>=4,<5", "tzlocal>=5,<6"]
 
 [project.urls]
 Repository = "https://github.com/rchardx/agent-usage"
