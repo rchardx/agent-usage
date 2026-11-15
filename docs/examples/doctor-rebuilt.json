@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-02T00:00:00+00:00",
+  "doctor": {
+    "version": "0.1.0",
+    "paths": {
+      "codex": "/example/codex",
+      "claude": "/example/claude",
+      "pi": "/example/pi",
+      "omp": "/example/omp",
+      "cache": "/example/cache"
+    },
+    "timezone": "UTC",
+    "providers": {
+      "codex": {
+        "executable": null,
+        "version": null
+      },
+      "claude": {
+        "executable": null,
+        "version": null
+      },
+      "pi": {
+        "executable": null,
+        "version": null
+      },
+      "omp": {
+        "executable": null,
+        "version": null
+      }
+    },
+    "coverage": {
+      "files": 0,
+      "files_updated": 0,
+      "bytes_read": 0,
+      "issues": {},
+      "providers": {
+        "codex": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        },
+        "claude": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        },
+        "pi": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        },
+        "omp": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        }
+      }
+    },
+    "claude_credentials_file_present": false,
+    "claude_keychain_supported": false,
+    "index_rebuilt": true
+  }
+}

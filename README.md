@@ -67,6 +67,7 @@ the [usage guide](docs/usage.md).
 | --- | --- |
 | [Usage](docs/usage.md) | Commands, date ranges, output, data paths and diagnostics |
 | [Accounting and costs](docs/accounting.md) | Token definitions, deduplication, pricing and JSON coverage |
+| [JSON interface](docs/json-interface.md) | Bundled schema, compatibility policy and offline validation |
 | [Providers](docs/providers.md) | Account data sources, authentication and compatibility |
 | [Contributing](CONTRIBUTING.md) | Development installation, checks, hooks and PR conventions |
 | [Security](SECURITY.md) | Privacy boundaries and private vulnerability reporting |

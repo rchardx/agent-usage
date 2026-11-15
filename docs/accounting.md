@@ -40,7 +40,9 @@ observed subtotal of a partially covered field. Every JSON metric includes:
 
 Here, two events lack the field. `300` is the known subtotal, not a complete total.
 When coverage is complete, `tokens` is the full value (including a genuine zero).
-The top-level JSON envelope has `schema_version: 1`.
+The top-level JSON envelope has `schema_version: 1`. See the
+[JSON interface](json-interface.md) for the bundled schema, validation and
+compatibility policy.
 
 ### Deduplication and request attribution
 

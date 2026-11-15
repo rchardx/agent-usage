@@ -48,7 +48,12 @@ uv run --locked pytest -q tests/test_pricing.py
 Run the complete checks before requesting merge. Tests use synthetic records and
 mock endpoints; pytest disables network sockets. Never run account queries or read
 real agent homes in tests. CI also tests the installed wheel outside the checkout
-with empty data directories.
+with empty data directories and validates its JSON against the bundled schema.
+Schema validation dependencies are development-only. JSON changes must update
+`src/agent_usage/schemas/report-v1.schema.json`, contract tests and synthetic
+examples as appropriate; follow [JSON compatibility rules](docs/json-interface.md).
+Cache recovery tests must use isolated cache directories and preserve source
+logs and unrelated snapshots, including on simulated failure.
 
 ### Optional local hooks
 

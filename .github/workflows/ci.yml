@@ -68,13 +68,18 @@ jobs:
         shell: bash
         run: |
           wheel=("$PWD"/dist/*.whl)
+          validator="$PWD/scripts/validate_report.py"
           cd "$(mktemp -d)"
           uv run --no-project --isolated --with "${wheel[0]}" agent-usage --version
           uv run --no-project --isolated --with "${wheel[0]}" agent-usage --help
           uv run --no-project --isolated --with "${wheel[0]}" agent-usage \
             --codex-home "$PWD/codex" --claude-home "$PWD/claude" \
             --pi-home "$PWD/pi" --omp-home "$PWD/omp" --cache-dir "$PWD/cache" \
-            --offline --no-cost tokens --all --json
+            --offline --no-cost tokens --all --json > report.json
+          uv run --no-project --isolated --with "${wheel[0]}" agent-usage schema > report.schema.json
+          uv run --no-project --isolated --with "${wheel[0]}" \
+            --with 'jsonschema>=4.23,<5' --with 'rfc3339-validator>=0.1.4,<1' \
+            python "$validator" report.json
 
   secrets:
     runs-on: ubuntu-latest

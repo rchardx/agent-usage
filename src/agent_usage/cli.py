@@ -1,6 +1,8 @@
 import json
 import shutil
+import sqlite3
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -11,7 +13,8 @@ from rich.console import Console
 from tzlocal import get_localzone
 
 from . import __version__
-from .index import Index
+from .cache import CacheError, cache_error_message
+from .index import Index, rebuild_index
 from .paths import Paths
 from .pricing import load_pricing
 from .render import render_quotas, render_tokens
@@ -55,6 +58,15 @@ class Settings:
     costs: bool = True
 
 
+@contextmanager
+def index_errors():
+    try:
+        yield
+    except (CacheError, sqlite3.Error, OSError) as exc:
+        typer.echo(f"Error: {cache_error_message(exc)}", err=True)
+        raise typer.Exit(1) from exc
+
+
 def token_report(
     settings: Settings,
     since=None,
@@ -68,7 +80,7 @@ def token_report(
         start, end = period(since, until, month, all_time, settings.zone, today=today)
     except (ValueError, OverflowError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    with Index(settings.paths.cache) as index:
+    with index_errors(), Index(settings.paths.cache) as index:
         coverage = index.sync(settings.paths, settings.providers)
         events = index.events(settings.paths, settings.providers)
     pricing = (
@@ -116,7 +128,15 @@ def quota_report(settings: Settings):
 
 def output(settings: Settings, result: dict, as_json: bool = False, detail: bool = False):
     if settings.json or as_json:
-        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        try:
+            encoded = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
+        except (ValueError, TypeError) as exc:
+            typer.echo(
+                "Error: Report could not be encoded as standard JSON; no report was emitted.",
+                err=True,
+            )
+            raise typer.Exit(1) from exc
+        typer.echo(encoded)
         return
     console = Console()
     if "quota" in result:
@@ -206,9 +226,25 @@ def tokens(
 
 
 @app.command()
-def doctor(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")):
+def doctor(
+    ctx: typer.Context,
+    as_json: bool = typer.Option(False, "--json"),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild-index",
+        help="Replace the shared usage index from all configured log roots.",
+    ),
+):
     """Offline diagnostics: CLI versions, data paths, and parser coverage."""
     settings = ctx.obj
+    if rebuild and settings.providers != list(ALL_PROVIDERS):
+        raise typer.BadParameter("--rebuild-index requires --provider all (the default).")
+    with index_errors():
+        if rebuild:
+            coverage = rebuild_index(settings.paths, settings.providers)
+        else:
+            with Index(settings.paths.cache) as index:
+                coverage = index.sync(settings.paths, settings.providers)
     versions = {}
     for provider in settings.providers:
         executable = shutil.which(provider)
@@ -228,8 +264,6 @@ def doctor(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")):
             except (OSError, subprocess.TimeoutExpired):
                 version = "unavailable"
         versions[provider] = {"executable": executable, "version": version}
-    with Index(settings.paths.cache) as index:
-        coverage = index.sync(settings.paths, settings.providers)
     result = envelope(
         doctor={
             "version": __version__,
@@ -246,7 +280,17 @@ def doctor(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")):
             "claude_keychain_supported": False,
         }
     )
+    if rebuild:
+        result["doctor"]["index_rebuilt"] = True
     output(settings, result, as_json)
+
+
+@app.command()
+def schema():
+    """Print the bundled JSON Schema for version 1 reports (offline)."""
+    from .json_contract import load_schema
+
+    typer.echo(json.dumps(load_schema(), indent=2))
 
 
 if __name__ == "__main__":

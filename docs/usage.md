@@ -67,6 +67,54 @@ exit code. Invalid CLI arguments exit with code 2.
 
 See [Accounting and cost estimates](accounting.md) for token definitions,
 unknown-value semantics and the JSON fields used to express incomplete coverage.
+The [JSON interface](json-interface.md) defines the versioned schema, compatibility
+rules and offline validation. Export it with `agent-usage schema`.
+
+### Recovering the usage index
+
+If the usage index is damaged, incompatible, or stale after manually editing logs,
+explicitly rebuild it from the currently configured source directories:
+
+```bash
+agent-usage doctor --rebuild-index
+agent-usage --cache-dir /path/to/cache doctor --rebuild-index --json
+```
+
+Repeat any `--codex-home`, `--claude-home`, `--pi-home` and `--omp-home` overrides
+used for your reports. Rebuilding requires `--provider all` (the default): it
+replaces the shared index, not just a single provider's rows. It cannot recover
+missing/deleted logs, and an empty set of source directories produces an empty
+index. Verify your configured paths before rebuilding.
+
+The rebuild reads local logs without querying accounts or prices. As with normal
+`doctor`, installed agent executables may be probed with `--version`. It stages a
+new index privately in the same cache directory, checks it and atomically replaces
+only `index.sqlite3`. A failed scan, integrity check or replacement leaves the
+previous index in place. Source logs, credentials, quota snapshots and cached
+prices are not modified. Unreadable discovered files abort the rebuild; malformed
+or unfinished log records retain the usual coverage warnings. Allow enough disk
+space for both the old and new indexes during a rebuild.
+
+Index operations use an OS-backed exclusive lock. Concurrent commands fail with a
+busy message instead of racing a rebuild; retry after the other command finishes.
+Process exit releases the lock, including after a crash. The small `index.lock`
+file intentionally remains: **do not delete it to unlock a running process**.
+A forcibly terminated rebuild may leave a private `.index-rebuild-*` staging
+directory; it is not used as the active index.
+
+Stop older agent-usage versions and external SQLite tools before rebuilding; they
+do not participate in this lock. SQLite `-wal`, `-shm` or `-journal` recovery files
+are never discarded by the rebuild. If they are present, close other processes
+and try a normal token query to let SQLite recover, or select a fresh writable
+`--cache-dir`. Rebuilds also refuse a symbolic-link index. Locking/atomic replacement
+assume a local filesystem with working OS locks, not an unsupported network share.
+
+Storage failures exit 1 with an actionable stderr message and no partial JSON.
+For permission errors, use a writable cache directory; for a full disk, free
+space first. Failures never silently delete the index or turn its contents into
+zero usage. Missing or malformed quota/price snapshots continue to use their
+existing unavailable/stale fallback behavior; rebuilding the usage index does
+not refresh those snapshots.
 
 ## Paths and privacy
 
@@ -107,7 +155,8 @@ deleted sessions.
 Incremental reads assume append-only client logs. Inode changes, truncation,
 same-size rewrites, and modifications near the last indexed offset trigger
 reindexing. Arbitrary edits to earlier bytes followed by an append are not fully
-detected: select a fresh `--cache-dir` after manually editing transcripts. An
+detected: run `doctor --rebuild-index` (or select a fresh `--cache-dir`) after
+manually editing transcripts. An
 unfinished final line is deferred until complete; oversized lines are reported
 and left pending instead of allocating unbounded memory.
 
