@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from rich.text import Text
 from test_cli import options
 from typer.testing import CliRunner
 
@@ -27,8 +28,10 @@ def test_help_is_successful_and_has_no_report_side_effects(paths, monkeypatch, c
     forbid_reports(monkeypatch)
     result = runner.invoke(app, [*options(paths), *command, "--help"], color=False)
     assert result.exit_code == 0, result.output
-    assert "Usage:" in result.stdout
-    assert "--help" in result.stdout
+    # GitHub Actions forces Rich styling even when CliRunner has color=False.
+    help_text = Text.from_ansi(result.stdout).plain
+    assert "Usage:" in help_text
+    assert "--help" in help_text
     assert result.stderr == ""
     assert not paths.cache.exists()
 
@@ -78,7 +81,7 @@ def test_invalid_arguments_fail_cleanly_before_reports(paths, monkeypatch, args,
     result = runner.invoke(app, [*options(paths), *args], color=False)
     assert result.exit_code == 2, result.output
     assert result.stdout == ""
-    error = " ".join(result.stderr.split())
+    error = " ".join(Text.from_ansi(result.stderr).plain.split())
     assert fragment in error
     assert "Traceback" not in error
     assert not paths.cache.exists()
