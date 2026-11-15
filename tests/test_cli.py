@@ -98,17 +98,12 @@ def test_offline_default_handles_missing_accounts_and_empty_logs(paths):
     result = runner.invoke(app, [*options(paths), "--offline", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    expected = {
-        "codex": "unavailable",
-        "claude": "unavailable",
-        "pi": "unsupported",
-        "omp": "unsupported",
-    }
+    expected = {"codex": "unavailable", "claude": "unavailable"}
     assert {a["provider"]: a["status"] for a in data["quota"]["accounts"]} == expected
     assert data["tokens"]["totals"]["events"] == 0
 
 
-def test_pi_and_omp_tokens_without_quota_api(paths):
+def test_pi_and_omp_tokens_without_quota(paths):
     root = paths.pi / "sessions/-example"
     write_rows(
         root / "2026-10-01T00-00-00-000Z_abc.jsonl",
@@ -118,11 +113,18 @@ def test_pi_and_omp_tokens_without_quota_api(paths):
     result = runner.invoke(app, args)
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    account = data["quota"]["accounts"][0]
-    assert account["provider"] == "pi" and account["status"] == "unsupported"
+    assert "quota" not in data
     groups = data["tokens"]["groups"]
     assert [g["provider"] for g in groups] == ["pi"]
     assert groups[0]["metrics"]["total_tokens"]["tokens"] == 19
+
+
+@pytest.mark.parametrize("provider", ["pi", "omp"])
+def test_token_only_providers_cannot_query_quota(paths, provider):
+    result = runner.invoke(app, [*options(paths), "--provider", provider, "quota"])
+    assert result.exit_code == 2
+    result = runner.invoke(app, [*options(paths), "--provider", provider, "quota", "--json"])
+    assert result.exit_code == 2
 
 
 def test_bad_dates_fail_before_index_creation(paths):
