@@ -243,9 +243,7 @@ def parse_pi_style(
     return event, None
 
 
-def parse_pi(
-    row: dict, state: dict, fallback_session: str
-) -> tuple[UsageEvent | None, str | None]:
+def parse_pi(row: dict, state: dict, fallback_session: str) -> tuple[UsageEvent | None, str | None]:
     return parse_pi_style(row, state, fallback_session, "pi")
 
 
