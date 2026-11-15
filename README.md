@@ -8,8 +8,9 @@ credits, detailed tokens from local transcripts, and API-equivalent cost estimat
 using [models.dev](https://models.dev/) prices. Account allowances and local
 token history have separate scopes: other devices can affect account limits,
 while this tool only counts logs available in the selected local directories.
-pi and omp expose no account quota API; they contribute local token history only
-and their quota status reports as `unsupported`.
+pi and omp are multi-provider harnesses, not subscription accounts; they have no
+allowance windows or credits, contribute local token history only, and are
+excluded from quota reports.
 
 ## Install
 
@@ -46,7 +47,7 @@ without any of the CLIs installed.
 
 ```bash
 agent-usage                                 # Account allowances + last 30 days, by day
-agent-usage quota                           # Windows, resets, credits
+agent-usage quota                           # Codex/Claude windows, resets, credits
 agent-usage --refresh quota                 # Bypass the 120-second account cache
 agent-usage --offline                       # Cached allowances + local tokens; no network
 agent-usage tokens --since 7d               # Rolling seven-day interval
@@ -201,8 +202,9 @@ record is unpriced; `known_amount`, `known_components`, `priced_events`, and
   Window duration is read from the response rather than assuming five-hour and
   weekly windows. `rateLimitResetCredits.availableCount` is authoritative even
   when reset detail rows are missing or capped.
-- **pi / omp:** no account quota API exists; quota reports return `unsupported`
-  and only local token history is available.
+- **pi / omp:** multi-provider harnesses without a subscription account. No
+  account quota concept applies; they are excluded from quota reports, and
+  selecting them for `quota` is an error. Only local token history is available.
 - **Claude Code:** the client-internal `GET https://api.anthropic.com/api/oauth/usage`
   endpoint, using the existing OAuth credentials file. This is an independently
   isolated compatibility adapter, not a public API guarantee. Legacy and unified
@@ -226,7 +228,7 @@ from their identifiers or provider-supplied names. Recognized items have readabl
 `label` values; JSON retains their `bucket` identifiers for machine use.
 
 Account results include their source, observation time, age, and one of `ok`,
-`cached`, `stale`, `unavailable`, or `unsupported`. Queries run concurrently with bounded
+`cached`, `stale`, or `unavailable`. Queries run concurrently with bounded
 timeouts. A failed refresh can return the last matching snapshot marked `stale`
 and accompanied by the error. A past reset timestamp is displayed as such; the
 tool does not manufacture a new zero-usage window. There is no automatic retry

@@ -13,8 +13,9 @@ from .paths import Paths
 from .pricing import Pricing, cost_summary, resolve_catalog
 from .providers import fetch_claude, fetch_codex
 
-# pi/omp have no account quota API; they contribute local token history only.
-TOKEN_ONLY_PROVIDERS = ("pi", "omp")
+# pi/omp are multi-provider harnesses, not subscription accounts; they have no
+# account quota concept and contribute local token history only.
+ACCOUNT_PROVIDERS = ("codex", "claude")
 
 
 def snapshot_path(paths: Paths, provider: str) -> Path:
@@ -46,13 +47,6 @@ def read_snapshot(path: Path) -> dict | None:
 def account_report(
     paths: Paths, provider: str, *, refresh: bool, offline: bool, timeout: float
 ) -> dict:
-    if provider in TOKEN_ONLY_PROVIDERS:
-        return AccountReport(
-            provider,
-            "not-applicable",
-            status="unsupported",
-            error="No account quota API; local token history only.",
-        ).to_dict()
     cache_path = snapshot_path(paths, provider)
     home = paths.codex if provider == "codex" else paths.claude
     credentials = home / ("auth.json" if provider == "codex" else ".credentials.json")
@@ -96,6 +90,7 @@ def account_report(
 
 
 def quotas(paths: Paths, providers: list[str], **options) -> dict:
+    providers = [name for name in providers if name in ACCOUNT_PROVIDERS]
     with ThreadPoolExecutor(max_workers=len(providers)) as pool:
         reports = list(pool.map(lambda name: account_report(paths, name, **options), providers))
     return {"scope": "account", "accounts": reports}

@@ -15,7 +15,7 @@ from .index import Index
 from .paths import Paths
 from .pricing import load_pricing
 from .render import render_quotas, render_tokens
-from .reports import envelope, period, quotas, summarize
+from .reports import ACCOUNT_PROVIDERS, envelope, period, quotas, summarize
 
 app = typer.Typer(
     no_args_is_help=False,
@@ -99,9 +99,15 @@ def token_report(
 
 
 def quota_report(settings: Settings):
+    providers = [name for name in settings.providers if name in ACCOUNT_PROVIDERS]
+    if not providers:
+        raise typer.BadParameter(
+            "pi and omp are multi-provider harnesses, not accounts; "
+            "they only contribute local token history."
+        )
     return quotas(
         settings.paths,
-        settings.providers,
+        providers,
         refresh=settings.refresh,
         offline=settings.offline,
         timeout=settings.timeout,
@@ -167,8 +173,11 @@ def main(
     if ctx.invoked_subcommand is None:
         # Terminals get one row per day; JSON keeps provider totals for automation.
         by = "provider" if ctx.obj.json else "day"
-        result = envelope(quota=quota_report(ctx.obj), tokens=token_report(ctx.obj, by=by))
-        output(ctx.obj, result)
+        parts = {}
+        if any(name in ACCOUNT_PROVIDERS for name in ctx.obj.providers):
+            parts["quota"] = quota_report(ctx.obj)
+        parts["tokens"] = token_report(ctx.obj, by=by)
+        output(ctx.obj, envelope(**parts))
 
 
 @app.command()
