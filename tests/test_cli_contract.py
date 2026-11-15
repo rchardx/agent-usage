@@ -47,9 +47,9 @@ def test_eager_version_has_no_report_side_effects(paths, monkeypatch):
 
 def test_show_completion_does_not_dispatch_reports(paths, monkeypatch):
     forbid_reports(monkeypatch)
-    result = runner.invoke(
-        app, [*options(paths), "--show-completion", "bash"], prog_name="agent-usage"
-    )
+    # This eager flag detects the parent shell; hosted runners may have none.
+    monkeypatch.setattr("shellingham.detect_shell", lambda: ("bash", "/bin/bash"))
+    result = runner.invoke(app, [*options(paths), "--show-completion"], prog_name="agent-usage")
     assert result.exit_code == 0, result.output
     assert "agent-usage" in result.stdout
     assert "complete" in result.stdout
