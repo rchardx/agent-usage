@@ -45,7 +45,13 @@ Only one of `--since`, `--today`, `--month`, and `--all` may be selected.
 Terminal output fills the available width, separates input/output sections, and
 places account panels side by side on wide terminals. Tokens use decimal
 abbreviations: **K = 1,000; M = 1,000,000; B = 1,000,000,000; T = 1,000,000,000,000**.
-JSON always retains exact integer token counts.
+Token amounts (including unscaled values) and cache-hit percentages display
+exactly two decimal places, for example `123.00`, `1.20K`, and `60.00%`. USD
+estimates also use two places, retaining `<$0.01` for small positive amounts.
+Table labels and dates align left; numeric columns align right with space
+reserved for units and coverage markers so decimal points stay aligned across
+rows and totals. Session and record counts remain integers. JSON retains exact
+integer token counts and the existing six-decimal USD strings.
 
 `--by day` prints one row per calendar day in the reporting timezone with fixed
 metric columns — input, cache read/write, cache hit rate (cache read ÷ input),

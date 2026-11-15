@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.console import Console, Group
+from rich.measure import Measurement
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -20,12 +22,7 @@ def compact_number(value: int | float | Decimal) -> str:
     if abs(rounded) >= 1000 and index < len(suffixes) - 1:
         rounded /= 1000
         index += 1
-    text = (
-        format(rounded, "f").rstrip("0").rstrip(".")
-        if "." in format(rounded, "f")
-        else str(rounded)
-    )
-    return text + suffixes[index]
+    return f"{rounded:.2f}{suffixes[index]}"
 
 
 def display_time(value: str | None, zone) -> str:
@@ -164,6 +161,33 @@ def cost_text(cost: dict | None) -> str:
     return text
 
 
+class NumericCell(Text):
+    """A Text-compatible footer/cell whose suffix padding survives justification."""
+
+    def __rich_measure__(self, console, options):
+        return Measurement(self.cell_len, self.cell_len)
+
+    def __rich_console__(self, console, options):
+        # Rich strips trailing Text whitespace before right justification. Apply
+        # the reserved suffix slots as renderable padding instead of text spaces.
+        value = self.plain.rstrip(" ")
+        yield Padding(
+            Text(value, style=self.style, justify="right"),
+            (0, len(self.plain) - len(value), 0, 0),
+        )
+
+
+def numeric_cell(value: str, *, style: str = "") -> Text:
+    """Reserve suffix slots so units and coverage markers do not shift decimals.
+
+    Formatted values have two fractional digits, followed by an optional unit
+    (K/M/B/T or %) and an optional *. Unknown values have neither suffix.
+    """
+    _, point, fraction = value.partition(".")
+    suffix_length = len(fraction) - 2 if point else 0
+    return NumericCell(value + " " * (2 - suffix_length), style=style)
+
+
 def merge_metrics(metrics: list[dict]) -> dict:
     return {
         "tokens": None
@@ -189,7 +213,7 @@ def cache_hit_text(read: dict, total_input: dict) -> str:
     if not read["observed_events"] or not total_input["known_tokens"]:
         return "—"
     share = Decimal(read["known_tokens"]) / Decimal(total_input["known_tokens"]) * 100
-    text = f"{share:.1f}%"
+    text = f"{share:.2f}%"
     return text if read["tokens"] is not None else f"≥{text}*"
 
 
@@ -228,38 +252,50 @@ def render_daily(report: dict, console: Console, zone) -> None:
 
     totals = report["totals"]["metrics"]
     table = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 2), show_footer=True)
-    table.add_column("Day", footer=Text("Total", style="bold"), no_wrap=True)
+    table.add_column("Day", footer=Text("Total", style="bold"), justify="left", no_wrap=True)
     if show_input:
-        table.add_column("Input", footer=metric_text(totals["input_tokens"]), justify="right")
+        table.add_column(
+            "Input", footer=numeric_cell(metric_text(totals["input_tokens"])), justify="right"
+        )
     if show_cache_read:
         table.add_column(
-            "Cache read", footer=metric_text(totals["cache_read_tokens"]), justify="right"
+            "Cache read",
+            footer=numeric_cell(metric_text(totals["cache_read_tokens"])),
+            justify="right",
         )
     if show_cache_write:
         table.add_column(
-            "Cache write", footer=metric_text(totals["cache_write_tokens"]), justify="right"
+            "Cache write",
+            footer=numeric_cell(metric_text(totals["cache_write_tokens"])),
+            justify="right",
         )
     if show_hit:
         table.add_column(
             "Cache hit",
-            footer=cache_hit_text(totals["cache_read_tokens"], totals["input_tokens"]),
+            footer=numeric_cell(
+                cache_hit_text(totals["cache_read_tokens"], totals["input_tokens"])
+            ),
             justify="right",
         )
     if show_output:
-        table.add_column("Output", footer=metric_text(totals["output_tokens"]), justify="right")
+        table.add_column(
+            "Output", footer=numeric_cell(metric_text(totals["output_tokens"])), justify="right"
+        )
     table.add_column(
         "Total",
-        footer=Text(metric_text(totals["total_tokens"]), style="bold"),
+        footer=numeric_cell(metric_text(totals["total_tokens"]), style="bold"),
         justify="right",
     )
     if priced:
         table.add_column(
             "USD",
-            footer=Text(cost_text(report["totals"].get("estimated_cost")), style="bold green"),
+            footer=numeric_cell(
+                cost_text(report["totals"].get("estimated_cost")), style="bold green"
+            ),
             justify="right",
         )
     if bar_width:
-        table.add_column("", width=bar_width, no_wrap=True)
+        table.add_column("", width=bar_width, justify="left", no_wrap=True)
 
     rows = []
     for day in days:
@@ -282,19 +318,23 @@ def render_daily(report: dict, console: Console, zone) -> None:
     for day, entries, metrics, partial in rows:
         cells: list[Text | str] = [Text(f"{day:%Y-%m-%d %a}" + (" ·" if partial else "  "))]
         if show_input:
-            cells.append(metric_text(metrics["input_tokens"]))
+            cells.append(numeric_cell(metric_text(metrics["input_tokens"])))
         if show_cache_read:
-            cells.append(metric_text(metrics["cache_read_tokens"]))
+            cells.append(numeric_cell(metric_text(metrics["cache_read_tokens"])))
         if show_cache_write:
-            cells.append(metric_text(metrics["cache_write_tokens"]))
+            cells.append(numeric_cell(metric_text(metrics["cache_write_tokens"])))
         if show_hit:
-            cells.append(cache_hit_text(metrics["cache_read_tokens"], metrics["input_tokens"]))
+            cells.append(
+                numeric_cell(cache_hit_text(metrics["cache_read_tokens"], metrics["input_tokens"]))
+            )
         if show_output:
-            cells.append(metric_text(metrics["output_tokens"]))
-        cells.append(Text(metric_text(metrics["total_tokens"]), style="bold"))
+            cells.append(numeric_cell(metric_text(metrics["output_tokens"])))
+        cells.append(numeric_cell(metric_text(metrics["total_tokens"]), style="bold"))
         if priced:
             costs = [g["estimated_cost"] for g in entries.values() if "estimated_cost" in g]
-            cells.append(Text(cost_text(merge_costs(costs) if costs else None), style="green"))
+            cells.append(
+                numeric_cell(cost_text(merge_costs(costs) if costs else None), style="green")
+            )
         if bar_width:
             cells.append(
                 Text(bar(metrics["total_tokens"]["known_tokens"], peak, bar_width), style="cyan")
@@ -399,7 +439,7 @@ def render_breakdown(report: dict, console: Console):
     for offset in range(0, len(groups), batch_size):
         batch = groups[offset : offset + batch_size]
         table = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 2))
-        table.add_column("Token breakdown", ratio=2)
+        table.add_column("Token breakdown", justify="left", ratio=2)
         for group in batch:
             label = group["provider"].upper()
             if report["group_by"] != "provider":
@@ -409,7 +449,7 @@ def render_breakdown(report: dict, console: Console):
             bold = key in ("input_tokens", "output_tokens", "total_tokens")
             table.add_row(
                 label,
-                *(metric_text(group["metrics"][key]) for group in batch),
+                *(numeric_cell(metric_text(group["metrics"][key])) for group in batch),
                 style="bold" if bold else None,
                 end_section=key
                 in ("cache_write_1h_tokens", "non_reasoning_output_tokens", "total_tokens"),
@@ -417,7 +457,7 @@ def render_breakdown(report: dict, console: Console):
         if "pricing" in report:
             table.add_row(
                 "API estimate · USD",
-                *(cost_text(g.get("estimated_cost")) for g in batch),
+                *(numeric_cell(cost_text(g.get("estimated_cost"))) for g in batch),
                 style="bold green",
             )
             table.add_row(
