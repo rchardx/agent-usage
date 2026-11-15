@@ -1,6 +1,6 @@
 import json
 
-from conftest import claude_usage, codex_meta, codex_usage, write_rows
+from conftest import agent_session, agent_usage, claude_usage, codex_meta, codex_usage, write_rows
 
 from agent_usage.index import Index
 
@@ -212,6 +212,58 @@ def test_claude_iterations_do_not_claim_a_single_request_size(paths):
         index.sync(paths, ["claude"])
         events = index.events(paths, ["claude"])
     assert {e["request_input_tokens"] for e in events} == {122, None}
+
+
+def test_pi_session_usage_and_sidecar_exclusion(paths):
+    root = paths.pi / "sessions/-example"
+    session = "2026-10-01T00-00-00-000Z_abc"
+    write_rows(root / f"{session}.jsonl", [agent_session(), agent_usage(), agent_usage("resp-b")])
+    # Sidecar files next to a session transcript are never transcripts.
+    write_rows(root / session / "changes.jsonl", [agent_usage("resp-sidecar")])
+    write_rows(root / session / "Forecast.jsonl", [agent_usage("resp-report")])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["pi"])
+        events = index.events(paths, ["pi"])
+    assert len(events) == 2
+    assert events[0]["provider"] == "pi"
+    assert events[0]["session"] == "agent-session"
+    assert events[0]["project"] == "/example"
+    assert events[0]["input_tokens"] == 14
+    assert events[0]["output_tokens"] == 5
+    assert events[0]["cache_read_tokens"] == 3
+    assert events[0]["cache_write_tokens"] == 1
+    assert events[0]["reasoning_tokens"] == 2
+    assert events[0]["request_input_tokens"] == 14
+    assert events[0]["model"] == "example-upstream/example-model"
+    assert b"PRIVATE-CONVERSATION-SENTINEL" not in (paths.cache / "index.sqlite3").read_bytes()
+
+
+def test_omp_reasoning_tokens_key_and_response_model_preference(paths):
+    root = paths.omp / "sessions/-example"
+    row = agent_usage(reasoningTokens=4)
+    del row["message"]["usage"]["reasoning"]
+    row["message"]["responseModel"] = "actual-model"
+    write_rows(root / "2026-10-01T00-00-00-000Z_def.jsonl", [agent_session("omp-s"), row])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["omp"])
+        events = index.events(paths, ["omp"])
+    assert len(events) == 1
+    assert events[0]["provider"] == "omp"
+    assert events[0]["reasoning_tokens"] == 4
+    assert events[0]["model"] == "example-upstream/actual-model"
+
+
+def test_pi_zero_usage_and_identity_fallback(paths):
+    root = paths.pi / "sessions/-example"
+    zero = agent_usage("resp-zero", input=0, output=0, cacheRead=0, cacheWrite=0, reasoning=0)
+    no_id = agent_usage("resp-raw")
+    del no_id["message"]["responseId"]
+    write_rows(root / "2026-10-01T00-00-00-000Z_ghi.jsonl", [zero, no_id])
+    with Index(paths.cache) as index:
+        index.sync(paths, ["pi"])
+        events = index.events(paths, ["pi"])
+    assert len(events) == 1
+    assert events[0]["session"] == "2026-10-01T00-00-00-000Z_ghi"
 
 
 def test_streaming_and_copied_iteration_records_keep_request_size_unknown(paths):

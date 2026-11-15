@@ -179,6 +179,82 @@ def parse_claude(
     return event, None
 
 
+def parse_pi_style(
+    row: dict, state: dict, fallback_session: str, provider: str
+) -> tuple[UsageEvent | None, str | None]:
+    """pi and omp share one session schema: per-request assistant usage, never cumulative."""
+    if row.get("type") == "session":
+        # Ownership belongs to the first session record, as with codex forks.
+        if state.get("session_seen"):
+            return None, None
+        state.update(
+            session_seen=True,
+            session=row.get("id") or fallback_session,
+            project=row.get("cwd", "unknown"),
+        )
+        return None, None
+    if row.get("type") == "model_change":
+        # pi reports provider/modelId; omp reports model.
+        state["model"] = row.get("model") or row.get("modelId") or state.get("model")
+        return None, None
+    message = row.get("message")
+    if row.get("type") != "message" or not isinstance(message, dict):
+        return None, None
+    if message.get("role") != "assistant":
+        return None, None
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return None, None
+    fresh = count(usage.get("input"))
+    output = count(usage.get("output"))
+    read = count(usage.get("cacheRead"))
+    write = count(usage.get("cacheWrite"))
+    reasoning = count(usage.get("reasoning", usage.get("reasoningTokens")))
+    if fresh is None or output is None or read is None or write is None:
+        return None, f"{provider}_incomplete_usage"
+    if fresh + output + read + write == 0:
+        return None, None
+    timestamp = iso_time(row.get("timestamp"))
+    if timestamp is None:
+        return None, "missing_timestamp"
+    identity = message.get("responseId") or row.get("id") or message.get("id")
+    if not identity:
+        return None, f"{provider}_missing_request_identity"
+    model = message.get("responseModel") or message.get("model") or state.get("model") or "unknown"
+    upstream = message.get("provider")
+    if upstream and "/" not in model:
+        # Namespace the actual model with the upstream that served it (never guessed aliases).
+        model = f"{upstream}/{model}"
+    event = UsageEvent(
+        provider=provider,
+        event_id=digest([provider, state.get("session", fallback_session), identity]),
+        session=state.get("session", fallback_session),
+        timestamp=timestamp,
+        model=model,
+        project=state.get("project", "unknown"),
+        input_tokens=fresh + read + write,
+        output_tokens=output,
+        cache_read_tokens=read,
+        cache_write_tokens=write,
+        reasoning_tokens=reasoning,
+        request_input_tokens=fresh + read + write,
+    )
+    validate(event)
+    return event, None
+
+
+def parse_pi(
+    row: dict, state: dict, fallback_session: str
+) -> tuple[UsageEvent | None, str | None]:
+    return parse_pi_style(row, state, fallback_session, "pi")
+
+
+def parse_omp(
+    row: dict, state: dict, fallback_session: str
+) -> tuple[UsageEvent | None, str | None]:
+    return parse_pi_style(row, state, fallback_session, "omp")
+
+
 def validate(event: UsageEvent):
     if event.cache_read_tokens is not None and event.cache_read_tokens > event.input_tokens:
         raise ValueError("Cache reads exceed total input")

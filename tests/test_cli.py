@@ -2,7 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import claude_usage, write_rows
+from conftest import agent_session, agent_usage, claude_usage, write_rows
 from typer.testing import CliRunner
 
 from agent_usage.cli import app
@@ -70,6 +70,10 @@ def options(paths):
         str(paths.codex),
         "--claude-home",
         str(paths.claude),
+        "--pi-home",
+        str(paths.pi),
+        "--omp-home",
+        str(paths.omp),
         "--cache-dir",
         str(paths.cache),
         "--timezone",
@@ -94,8 +98,31 @@ def test_offline_default_handles_missing_accounts_and_empty_logs(paths):
     result = runner.invoke(app, [*options(paths), "--offline", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert all(a["status"] == "unavailable" for a in data["quota"]["accounts"])
+    expected = {
+        "codex": "unavailable",
+        "claude": "unavailable",
+        "pi": "unsupported",
+        "omp": "unsupported",
+    }
+    assert {a["provider"]: a["status"] for a in data["quota"]["accounts"]} == expected
     assert data["tokens"]["totals"]["events"] == 0
+
+
+def test_pi_and_omp_tokens_without_quota_api(paths):
+    root = paths.pi / "sessions/-example"
+    write_rows(
+        root / "2026-10-01T00-00-00-000Z_abc.jsonl",
+        [agent_session(), agent_usage(stamp=recent())],
+    )
+    args = [*options(paths), "--provider", "pi", "--offline", "--no-cost", "--json"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    account = data["quota"]["accounts"][0]
+    assert account["provider"] == "pi" and account["status"] == "unsupported"
+    groups = data["tokens"]["groups"]
+    assert [g["provider"] for g in groups] == ["pi"]
+    assert groups[0]["metrics"]["total_tokens"]["tokens"] == 19
 
 
 def test_bad_dates_fail_before_index_creation(paths):

@@ -9,11 +9,12 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .models import UsageEvent
-from .parsers import METRICS, PARSER_VERSION, parse_claude, parse_codex
+from .parsers import METRICS, PARSER_VERSION, parse_claude, parse_codex, parse_omp, parse_pi
 from .paths import Paths
 
 SCHEMA_VERSION = 2
 MAX_LINE_BYTES = 32 * 1024 * 1024
+PARSERS = {"codex": parse_codex, "claude": parse_claude, "pi": parse_pi, "omp": parse_omp}
 
 
 class Index:
@@ -94,7 +95,7 @@ class Index:
         total_issues: Counter = Counter()
         for provider in providers:
             files = paths.files(provider)
-            root = paths.codex if provider == "codex" else paths.claude
+            root = getattr(paths, provider)
             summary = {"files": len(files), "root_exists": root.is_dir(), "issues": {}}
             issues: Counter = Counter()
             for path in files:
@@ -144,7 +145,7 @@ class Index:
             start = offset
             pending_issues: Counter = Counter()
             handle.seek(offset)
-            parse = parse_codex if provider == "codex" else parse_claude
+            parse = PARSERS[provider]
             while handle.tell() < stat.st_size:
                 position = handle.tell()
                 line = handle.readline(min(MAX_LINE_BYTES + 1, stat.st_size - position))

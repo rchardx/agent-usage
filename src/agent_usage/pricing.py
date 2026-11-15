@@ -19,6 +19,18 @@ PROVIDERS = {"codex": "openai", "claude": "anthropic"}
 MILLION = Decimal(1_000_000)
 
 
+def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None, str]:
+    """Catalog provider and model id for an agent event; explicit namespaces only."""
+    catalog = PROVIDERS.get(provider)
+    if catalog:
+        return catalog, model.removeprefix(f"{catalog}/")
+    # pi/omp run many upstreams; trust only an explicit "provider/model" prefix.
+    prefix, separator, rest = model.partition("/")
+    if separator and rest and prefix in models:
+        return prefix, rest
+    return None, model
+
+
 def money(value: Decimal) -> str:
     return format(value.quantize(Decimal("0.000001")), "f")
 
@@ -35,8 +47,11 @@ def rate(cost: dict, field: str) -> Decimal:
 
 def catalog_models(data: dict) -> dict:
     result = {}
-    for provider in PROVIDERS.values():
-        models = data.get(provider, {}).get("models", {})
+    # Keep every catalog provider: pi/omp events carry explicit upstream prefixes.
+    for provider, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        models = entry.get("models", {})
         result[provider] = {
             name: {"cost": model["cost"]}
             for name, model in models.items()
@@ -69,11 +84,7 @@ class Pricing:
         }
 
     def estimate(self, event: dict) -> dict:
-        provider = PROVIDERS.get(event["provider"])
-        model_id = event["model"]
-        # Only an explicit first-party namespace is removable; never guess model aliases.
-        if provider and model_id.startswith(f"{provider}/"):
-            model_id = model_id[len(provider) + 1 :]
+        provider, model_id = resolve_catalog(event["provider"], event["model"], self.models)
         models = self.models.get(provider, {})
         model = models.get(model_id) if isinstance(models, dict) else None
         if not isinstance(model, dict):

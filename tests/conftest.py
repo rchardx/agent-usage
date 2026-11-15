@@ -16,9 +16,17 @@ def offline_cli_prices(monkeypatch):
 
 @pytest.fixture
 def paths(tmp_path):
-    roots = Paths(tmp_path / "codex", tmp_path / "claude", tmp_path / "cache")
+    roots = Paths(
+        tmp_path / "codex",
+        tmp_path / "claude",
+        tmp_path / "pi",
+        tmp_path / "omp",
+        tmp_path / "cache",
+    )
     (roots.codex / "sessions").mkdir(parents=True)
     (roots.claude / "projects").mkdir(parents=True)
+    (roots.pi / "sessions" / "-example").mkdir(parents=True)
+    (roots.omp / "sessions" / "-example").mkdir(parents=True)
     return roots
 
 
@@ -80,6 +88,40 @@ def claude_usage(message="msg-a", stamp="2026-10-01T00:01:00Z", output=10, **usa
                 "output_tokens": output,
                 "output_tokens_details": {"thinking_tokens": 3},
                 "cache_creation": {"ephemeral_5m_input_tokens": 5, "ephemeral_1h_input_tokens": 15},
+                **usage,
+            },
+        },
+    }
+
+
+def agent_session(session="agent-session", cwd="/example"):
+    """pi/omp share one session schema."""
+    return {
+        "type": "session",
+        "version": 3,
+        "id": session,
+        "timestamp": "2026-10-01T00:00:00Z",
+        "cwd": cwd,
+    }
+
+
+def agent_usage(response="resp-a", stamp="2026-10-01T00:01:00Z", **usage):
+    return {
+        "type": "message",
+        "id": f"row-{response}",
+        "timestamp": stamp,
+        "message": {
+            "role": "assistant",
+            "provider": "example-upstream",
+            "model": "example-model",
+            "responseId": response,
+            "content": [{"type": "text", "text": "PRIVATE-CONVERSATION-SENTINEL"}],
+            "usage": {
+                "input": 10,
+                "output": 5,
+                "cacheRead": 3,
+                "cacheWrite": 1,
+                "reasoning": 2,
                 **usage,
             },
         },

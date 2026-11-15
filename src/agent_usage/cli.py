@@ -20,7 +20,7 @@ from .reports import envelope, period, quotas, summarize
 app = typer.Typer(
     no_args_is_help=False,
     pretty_exceptions_show_locals=False,
-    help="Codex and Claude Code allowances and local token usage.",
+    help="Codex, Claude Code, pi, and omp allowances and local token usage.",
 )
 
 
@@ -28,6 +28,11 @@ class Provider(StrEnum):
     all = "all"
     codex = "codex"
     claude = "claude"
+    pi = "pi"
+    omp = "omp"
+
+
+ALL_PROVIDERS = ("codex", "claude", "pi", "omp")
 
 
 class Group(StrEnum):
@@ -128,6 +133,8 @@ def main(
     provider: Provider = typer.Option(Provider.all, help="Providers to query."),
     codex_home: Path | None = typer.Option(None, help="Override CODEX_HOME."),
     claude_home: Path | None = typer.Option(None, help="Override CLAUDE_CONFIG_DIR."),
+    pi_home: Path | None = typer.Option(None, help="Override PI_CODING_AGENT_DIR."),
+    omp_home: Path | None = typer.Option(None, help="Override the omp agent directory."),
     cache_dir: Path | None = typer.Option(
         None, help="Rebuildable local index and quota snapshots."
     ),
@@ -148,8 +155,8 @@ def main(
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise typer.BadParameter("Unknown timezone; use an IANA name such as Asia/Tokyo.") from exc
     ctx.obj = Settings(
-        Paths.discover(codex_home, claude_home, cache_dir),
-        ["codex", "claude"] if provider == Provider.all else [provider.value],
+        Paths.discover(codex_home, claude_home, pi_home, omp_home, cache_dir),
+        list(ALL_PROVIDERS) if provider == Provider.all else [provider.value],
         zone,
         as_json,
         offline,
@@ -218,9 +225,8 @@ def doctor(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")):
         doctor={
             "version": __version__,
             "paths": {
-                "codex": str(settings.paths.codex),
-                "claude": str(settings.paths.claude),
-                "cache": str(settings.paths.cache),
+                provider: str(getattr(settings.paths, provider))
+                for provider in (*ALL_PROVIDERS, "cache")
             },
             "timezone": str(settings.zone),
             "providers": versions,

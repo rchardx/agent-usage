@@ -1,12 +1,15 @@
 # agent-usage
 
-A local-first CLI for Codex and Claude Code account allowances and token usage.
+A local-first CLI for Codex, Claude Code, pi, and omp account allowances and
+token usage.
 
 Reports account quota windows, automatic reset times, available reset allowances,
 credits, detailed tokens from local transcripts, and API-equivalent cost estimates
 using [models.dev](https://models.dev/) prices. Account allowances and local
 token history have separate scopes: other devices can affect account limits,
 while this tool only counts logs available in the selected local directories.
+pi and omp expose no account quota API; they contribute local token history only
+and their quota status reports as `unsupported`.
 
 ## Install
 
@@ -34,9 +37,10 @@ agent-usage
 Ensure the tool executable directory (`uv tool dir --bin`) is on `PATH`.
 `uv tool update-shell` can configure it for a new shell session.
 
-Live adapters were verified on Linux/WSL with Codex CLI 0.160.0 and Claude Code
-2.1.289. Other versions may expose different fields. Codex must be on `PATH` for
-live account queries. Local token reports work without either CLI installed.
+Live adapters were verified on Linux/WSL with Codex CLI 0.160.0, Claude Code
+2.1.289, pi 1.5.2, and omp 18.20.2. Other versions may expose different fields.
+Codex must be on `PATH` for live account queries. Local token reports work
+without any of the CLIs installed.
 
 ## Commands
 
@@ -91,17 +95,17 @@ exit code. Invalid CLI arguments exit with code 2.
 
 ## Token accounting
 
-| Normalized field | Codex source | Claude Code source |
-| --- | --- | --- |
-| Input, including cache | `input_tokens` | `input_tokens` + cache read + cache creation |
-| Fresh input | Input minus cache read/write, when both are known | `input_tokens` |
-| Cache read | `cached_input_tokens` | `cache_read_input_tokens` |
-| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens` |
-| Cache write, 5m / 1h TTL | Not currently reported | `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` |
-| Output, including reasoning | `output_tokens` | `output_tokens` |
-| Reasoning | `reasoning_output_tokens`, if present | `output_tokens_details.thinking_tokens`, if present |
-| Other output | Output minus reasoning, when known | Output minus reasoning, when known |
-| Total | Input + output | Input + output |
+| Normalized field | Codex source | Claude Code source | pi / omp source |
+| --- | --- | --- | --- |
+| Input, including cache | `input_tokens` | `input_tokens` + cache read + cache creation | `usage.input` + `usage.cacheRead` + `usage.cacheWrite` |
+| Fresh input | Input minus cache read/write, when both are known | `input_tokens` | `usage.input` |
+| Cache read | `cached_input_tokens` | `cache_read_input_tokens` | `usage.cacheRead` |
+| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens` | `usage.cacheWrite` |
+| Cache write, 5m / 1h TTL | Not currently reported | `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` | Not currently reported |
+| Output, including reasoning | `output_tokens` | `output_tokens` | `usage.output` |
+| Reasoning | `reasoning_output_tokens`, if present | `output_tokens_details.thinking_tokens`, if present | `usage.reasoning` (pi) / `usage.reasoningTokens` (omp), if present |
+| Other output | Output minus reasoning, when known | Output minus reasoning, when known | Output minus reasoning, when known |
+| Total | Input + output | Input + output | Input + output |
 
 Cache counts are components of normalized input. Reasoning is a component of
 output. TTL counts are components of cache writes. **Do not add these components
@@ -138,6 +142,12 @@ and message identity using monotonic component counts. Copied transcripts are
 deduplicated across files. Subagent transcripts are included. Historical events
 are not assigned to whichever account happens to be logged in today.
 
+pi and omp share one session schema with per-request assistant usage records;
+no differencing is needed. Events are keyed by response or row identity within
+their session. Models are reported as `responseModel` when present, namespaced
+with the upstream provider that served the request. Sidecar files stored next
+to a session transcript (such as `changes.jsonl`) are never parsed as usage.
+
 Dates describe logged usage-event times, not server billing periods. Logs with
 missing timestamps, unsupported usage structures, or invalid counts produce
 coverage notes. Deleted logs and requests never persisted by the clients cannot
@@ -148,6 +158,8 @@ be reconstructed; `history_complete` is always false.
 By default, token reports fetch the public models.dev catalog and match exact
 model IDs under `openai` for Codex and `anthropic` for Claude Code. Explicit
 `openai/` or `anthropic/` prefixes are accepted; model aliases are not guessed.
+pi and omp models match only through their explicit `upstream/model` prefix
+(for example `deepseek/deepseek-v4-flash`); unrecognized upstreams stay unpriced.
 Prices are USD per million tokens. The catalog is cached for 24 hours;
 `--refresh` refreshes it, `--offline` uses cached prices without network access,
 and `--no-cost` skips pricing altogether. Failed refreshes retain a dated, visibly
@@ -189,6 +201,8 @@ record is unpriced; `known_amount`, `known_components`, `priced_events`, and
   Window duration is read from the response rather than assuming five-hour and
   weekly windows. `rateLimitResetCredits.availableCount` is authoritative even
   when reset detail rows are missing or capped.
+- **pi / omp:** no account quota API exists; quota reports return `unsupported`
+  and only local token history is available.
 - **Claude Code:** the client-internal `GET https://api.anthropic.com/api/oauth/usage`
   endpoint, using the existing OAuth credentials file. This is an independently
   isolated compatibility adapter, not a public API guarantee. Legacy and unified
@@ -212,7 +226,7 @@ from their identifiers or provider-supplied names. Recognized items have readabl
 `label` values; JSON retains their `bucket` identifiers for machine use.
 
 Account results include their source, observation time, age, and one of `ok`,
-`cached`, `stale`, or `unavailable`. Queries run concurrently with bounded
+`cached`, `stale`, `unavailable`, or `unsupported`. Queries run concurrently with bounded
 timeouts. A failed refresh can return the last matching snapshot marked `stale`
 and accompanied by the error. A past reset timestamp is displayed as such; the
 tool does not manufacture a new zero-usage window. There is no automatic retry
@@ -232,11 +246,15 @@ Default inputs:
   `~/.codex` as the home directory.
 - Claude: `$CLAUDE_CONFIG_DIR/projects`, defaulting to `~/.claude` as the home
   directory, including nested subagent logs.
+- pi: `$PI_CODING_AGENT_DIR/sessions`, defaulting to `~/.pi/agent`. Only
+  timestamp-named session transcripts are indexed.
+- omp: `~/.omp/agent/sessions`, with the same transcript naming rule.
 - Cache: the platform user cache directory, typically `~/.cache/agent-usage` on
   Linux. Override it with `--cache-dir`.
 
 ```bash
 agent-usage --codex-home /path/to/.codex --claude-home /path/to/.claude tokens --all
+agent-usage --pi-home /path/to/agent --omp-home /path/to/agent tokens --all
 ```
 
 The scope is the current user and selected environment. WSL does not automatically

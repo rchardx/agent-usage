@@ -10,8 +10,11 @@ from .cache import write_json as save_snapshot
 from .models import AccountReport, ProbeError, utc_now
 from .parsers import METRICS
 from .paths import Paths
-from .pricing import Pricing, cost_summary
+from .pricing import Pricing, cost_summary, resolve_catalog
 from .providers import fetch_claude, fetch_codex
+
+# pi/omp have no account quota API; they contribute local token history only.
+TOKEN_ONLY_PROVIDERS = ("pi", "omp")
 
 
 def snapshot_path(paths: Paths, provider: str) -> Path:
@@ -43,6 +46,13 @@ def read_snapshot(path: Path) -> dict | None:
 def account_report(
     paths: Paths, provider: str, *, refresh: bool, offline: bool, timeout: float
 ) -> dict:
+    if provider in TOKEN_ONLY_PROVIDERS:
+        return AccountReport(
+            provider,
+            "not-applicable",
+            status="unsupported",
+            error="No account quota API; local token history only.",
+        ).to_dict()
     cache_path = snapshot_path(paths, provider)
     home = paths.codex if provider == "codex" else paths.claude
     credentials = home / ("auth.json" if provider == "codex" else ".credentials.json")
@@ -172,8 +182,7 @@ def summarize(
             report["totals"]["estimated_cost"] = cost_summary([])
         matches = []
         for provider, model in sorted({(event["provider"], event["model"]) for event in selected}):
-            catalog_provider = {"codex": "openai", "claude": "anthropic"}[provider]
-            model_id = model.removeprefix(f"{catalog_provider}/")
+            catalog_provider, model_id = resolve_catalog(provider, model, pricing.models)
             match = pricing.models.get(catalog_provider, {}).get(model_id)
             matches.append(
                 {
