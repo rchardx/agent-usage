@@ -1,0 +1,405 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-02T00:00:00+00:00",
+  "tokens": {
+    "scope": "local-records",
+    "timezone": "UTC",
+    "period": {
+      "start": null,
+      "end_exclusive": "2026-10-02T00:00:00+00:00",
+      "label": "All available history"
+    },
+    "group_by": "provider",
+    "groups": [
+      {
+        "provider": "claude",
+        "group": "claude",
+        "events": 1,
+        "sessions": 1,
+        "metrics": {
+          "input_tokens": {
+            "tokens": 30,
+            "known_tokens": 30,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "output_tokens": {
+            "tokens": 10,
+            "known_tokens": 10,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "cache_read_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "cache_write_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "reasoning_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "cache_write_5m_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "cache_write_1h_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "fresh_input_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "non_reasoning_output_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "total_tokens": {
+            "tokens": 40,
+            "known_tokens": 40,
+            "observed_events": 1,
+            "total_events": 1
+          }
+        },
+        "estimated_cost": {
+          "currency": "USD",
+          "amount": null,
+          "known_amount": "0.000000",
+          "priced_events": 0,
+          "total_events": 1,
+          "unpriced_reasons": {
+            "model_not_priced": 1
+          },
+          "unpriced_details": [
+            {
+              "provider": "claude",
+              "model": "example-unpriced",
+              "reason": "model_not_priced",
+              "events": 1
+            }
+          ],
+          "known_components": {
+            "fresh_input": "0.000000",
+            "cache_read": "0.000000",
+            "cache_write": "0.000000",
+            "output": "0.000000"
+          }
+        }
+      },
+      {
+        "provider": "codex",
+        "group": "codex",
+        "events": 1,
+        "sessions": 1,
+        "metrics": {
+          "input_tokens": {
+            "tokens": 100,
+            "known_tokens": 100,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "output_tokens": {
+            "tokens": 20,
+            "known_tokens": 20,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "cache_read_tokens": {
+            "tokens": 40,
+            "known_tokens": 40,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "cache_write_tokens": {
+            "tokens": 0,
+            "known_tokens": 0,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "reasoning_tokens": {
+            "tokens": 5,
+            "known_tokens": 5,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "cache_write_5m_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "cache_write_1h_tokens": {
+            "tokens": null,
+            "known_tokens": 0,
+            "observed_events": 0,
+            "total_events": 1
+          },
+          "fresh_input_tokens": {
+            "tokens": 60,
+            "known_tokens": 60,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "non_reasoning_output_tokens": {
+            "tokens": 15,
+            "known_tokens": 15,
+            "observed_events": 1,
+            "total_events": 1
+          },
+          "total_tokens": {
+            "tokens": 120,
+            "known_tokens": 120,
+            "observed_events": 1,
+            "total_events": 1
+          }
+        },
+        "estimated_cost": {
+          "currency": "USD",
+          "amount": "0.000104",
+          "known_amount": "0.000104",
+          "priced_events": 1,
+          "total_events": 1,
+          "unpriced_reasons": {},
+          "unpriced_details": [],
+          "known_components": {
+            "fresh_input": "0.000060",
+            "cache_read": "0.000004",
+            "cache_write": "0.000000",
+            "output": "0.000040"
+          }
+        }
+      }
+    ],
+    "totals": {
+      "events": 2,
+      "sessions": 2,
+      "metrics": {
+        "input_tokens": {
+          "tokens": 130,
+          "known_tokens": 130,
+          "observed_events": 2,
+          "total_events": 2
+        },
+        "output_tokens": {
+          "tokens": 30,
+          "known_tokens": 30,
+          "observed_events": 2,
+          "total_events": 2
+        },
+        "cache_read_tokens": {
+          "tokens": null,
+          "known_tokens": 40,
+          "observed_events": 1,
+          "total_events": 2
+        },
+        "cache_write_tokens": {
+          "tokens": null,
+          "known_tokens": 0,
+          "observed_events": 1,
+          "total_events": 2
+        },
+        "reasoning_tokens": {
+          "tokens": null,
+          "known_tokens": 5,
+          "observed_events": 1,
+          "total_events": 2
+        },
+        "cache_write_5m_tokens": {
+          "tokens": null,
+          "known_tokens": 0,
+          "observed_events": 0,
+          "total_events": 2
+        },
+        "cache_write_1h_tokens": {
+          "tokens": null,
+          "known_tokens": 0,
+          "observed_events": 0,
+          "total_events": 2
+        },
+        "fresh_input_tokens": {
+          "tokens": null,
+          "known_tokens": 60,
+          "observed_events": 1,
+          "total_events": 2
+        },
+        "non_reasoning_output_tokens": {
+          "tokens": null,
+          "known_tokens": 15,
+          "observed_events": 1,
+          "total_events": 2
+        },
+        "total_tokens": {
+          "tokens": 160,
+          "known_tokens": 160,
+          "observed_events": 2,
+          "total_events": 2
+        }
+      },
+      "estimated_cost": {
+        "currency": "USD",
+        "amount": null,
+        "known_amount": "0.000104",
+        "priced_events": 1,
+        "total_events": 2,
+        "unpriced_reasons": {
+          "model_not_priced": 1
+        },
+        "unpriced_details": [
+          {
+            "provider": "claude",
+            "model": "example-unpriced",
+            "reason": "model_not_priced",
+            "events": 1
+          }
+        ],
+        "known_components": {
+          "fresh_input": "0.000060",
+          "cache_read": "0.000004",
+          "cache_write": "0.000000",
+          "output": "0.000040"
+        }
+      }
+    },
+    "coverage": {
+      "files": 2,
+      "files_updated": 2,
+      "bytes_read": 1200,
+      "issues": {},
+      "providers": {
+        "codex": {
+          "files": 1,
+          "root_exists": true,
+          "issues": {}
+        },
+        "claude": {
+          "files": 1,
+          "root_exists": true,
+          "issues": {}
+        },
+        "pi": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        },
+        "omp": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        }
+      },
+      "indexed_events": 2,
+      "selected_events": 2,
+      "earliest_record": "2026-10-01T00:00:00+00:00",
+      "latest_record": "2026-10-01T00:00:00+00:00",
+      "history_complete": false,
+      "note": "Only available local logs are counted; deleted logs and other devices are absent."
+    },
+    "pricing": {
+      "source": "https://models.dev/api.json?type=all",
+      "status": "cached",
+      "fetched_at": "2026-10-01T00:00:00+00:00",
+      "currency": "USD",
+      "basis": "current_standard_api_rates",
+      "error": null,
+      "note": "Current standard API-equivalent estimate, not subscription charges. Excludes priority/fast/batch adjustments, regional modifiers, tool fees, and tax.",
+      "models": [
+        {
+          "agent": "claude",
+          "provider": "anthropic",
+          "model": "example-unpriced",
+          "cost_per_million_usd": null
+        },
+        {
+          "agent": "codex",
+          "provider": "openai",
+          "model": "example-priced",
+          "cost_per_million_usd": {
+            "input": 1,
+            "output": 2,
+            "cache_read": 0.1
+          }
+        }
+      ]
+    }
+  },
+  "quota": {
+    "scope": "account",
+    "accounts": [
+      {
+        "provider": "codex",
+        "source": "app-server",
+        "observed_at": "2026-10-01T00:00:00+00:00",
+        "status": "ok",
+        "plan": "example-plan",
+        "auth_mode": "chatgpt",
+        "windows": [
+          {
+            "bucket": "codex",
+            "window": "primary",
+            "used_percent": 25,
+            "resets_at": "2026-10-01T05:00:00+00:00",
+            "duration_minutes": 300,
+            "label": "Codex"
+          }
+        ],
+        "credits": [
+          {
+            "bucket": "codex",
+            "balance": "12.50",
+            "unit": "provider_units_unverified",
+            "enabled": null,
+            "has_credits": true,
+            "unlimited": null,
+            "limit": null,
+            "used": null,
+            "expires_at": null,
+            "label": null
+          }
+        ],
+        "resets": {
+          "available_count": 1,
+          "details": [
+            {
+              "scope": "example-reset",
+              "status": "available",
+              "expires_at": null
+            }
+          ]
+        },
+        "warnings": [],
+        "error": null,
+        "age_seconds": 0
+      },
+      {
+        "provider": "claude",
+        "source": "local-cache",
+        "observed_at": null,
+        "status": "unavailable",
+        "plan": null,
+        "auth_mode": null,
+        "windows": [],
+        "credits": [],
+        "resets": null,
+        "warnings": [],
+        "error": "No matching cached snapshot."
+      }
+    ]
+  }
+}

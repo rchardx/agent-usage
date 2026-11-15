@@ -1,0 +1,987 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-usage:report:v1",
+  "title": "agent-usage report envelope, version 1",
+  "description": "Successful --json reports. Unknown values remain null. Unknown object properties must be tolerated. All references are bundled; validation requires no network access.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "generated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "tokens": {
+      "$ref": "#/$defs/tokens"
+    },
+    "quota": {
+      "$ref": "#/$defs/quota"
+    },
+    "doctor": {
+      "$ref": "#/$defs/doctor"
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at"
+  ],
+  "additionalProperties": true,
+  "anyOf": [
+    {
+      "required": [
+        "tokens"
+      ]
+    },
+    {
+      "required": [
+        "quota"
+      ]
+    },
+    {
+      "required": [
+        "doctor"
+      ]
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "money": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]{6}$"
+    },
+    "metric": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": ["integer", "null"]
+        },
+        "known_tokens": {
+          "type": "integer"
+        },
+        "observed_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_events": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "tokens",
+        "known_tokens",
+        "observed_events",
+        "total_events"
+      ],
+      "additionalProperties": true
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "cache_read_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "cache_write_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "reasoning_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "cache_write_5m_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "cache_write_1h_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "fresh_input_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "non_reasoning_output_tokens": {
+          "$ref": "#/$defs/metric"
+        },
+        "total_tokens": {
+          "$ref": "#/$defs/metric"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "cache_write_5m_tokens",
+        "cache_write_1h_tokens",
+        "fresh_input_tokens",
+        "non_reasoning_output_tokens",
+        "total_tokens"
+      ],
+      "additionalProperties": true
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "currency": {
+          "const": "USD"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "known_amount": {
+          "$ref": "#/$defs/money"
+        },
+        "priced_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unpriced_reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "unpriced_details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "events": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "provider",
+              "model",
+              "reason",
+              "events"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "known_components": {
+          "type": "object",
+          "properties": {
+            "fresh_input": {
+              "$ref": "#/$defs/money"
+            },
+            "cache_read": {
+              "$ref": "#/$defs/money"
+            },
+            "cache_write": {
+              "$ref": "#/$defs/money"
+            },
+            "output": {
+              "$ref": "#/$defs/money"
+            }
+          },
+          "required": [
+            "fresh_input",
+            "cache_read",
+            "cache_write",
+            "output"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "currency",
+        "amount",
+        "known_amount",
+        "priced_events",
+        "total_events",
+        "unpriced_reasons",
+        "unpriced_details",
+        "known_components"
+      ],
+      "additionalProperties": true
+    },
+    "aggregate": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "estimated_cost": {
+          "$ref": "#/$defs/cost"
+        }
+      },
+      "required": [
+        "events",
+        "sessions",
+        "metrics"
+      ],
+      "additionalProperties": true
+    },
+    "group": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aggregate"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string"
+            },
+            "group": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "group"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "indexCoverage": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_updated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_read": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issues": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "root_exists": {
+                "type": "boolean"
+              },
+              "issues": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "required": [
+              "files",
+              "root_exists",
+              "issues"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [
+        "files",
+        "files_updated",
+        "bytes_read",
+        "issues",
+        "providers"
+      ],
+      "additionalProperties": true
+    },
+    "tokenCoverage": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/indexCoverage"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "indexed_events": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "selected_events": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "earliest_record": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "latest_record": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "history_complete": {
+              "const": false
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "indexed_events",
+            "selected_events",
+            "earliest_record",
+            "latest_record",
+            "history_complete",
+            "note"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "pricing": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "live",
+            "cached",
+            "stale",
+            "unavailable"
+          ]
+        },
+        "fetched_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currency": {
+          "const": "USD"
+        },
+        "basis": {
+          "const": "current_standard_api_rates"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "cost_per_million_usd": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Pass-through catalog rate table; keys and nested tiers are extensible."
+              }
+            },
+            "required": [
+              "agent",
+              "provider",
+              "model",
+              "cost_per_million_usd"
+            ],
+            "additionalProperties": true
+          }
+        }
+      },
+      "required": [
+        "source",
+        "status",
+        "fetched_at",
+        "currency",
+        "basis",
+        "error",
+        "note",
+        "models"
+      ],
+      "additionalProperties": true
+    },
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "const": "local-records"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "period": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "end_exclusive": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "start",
+            "end_exclusive",
+            "label"
+          ],
+          "additionalProperties": true
+        },
+        "group_by": {
+          "enum": [
+            "provider",
+            "model",
+            "project",
+            "day",
+            "session"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/group"
+          }
+        },
+        "totals": {
+          "$ref": "#/$defs/aggregate"
+        },
+        "coverage": {
+          "$ref": "#/$defs/tokenCoverage"
+        },
+        "pricing": {
+          "$ref": "#/$defs/pricing"
+        }
+      },
+      "required": [
+        "scope",
+        "timezone",
+        "period",
+        "group_by",
+        "groups",
+        "totals",
+        "coverage"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "pricing"
+            ]
+          },
+          "then": {
+            "properties": {
+              "totals": {
+                "required": [
+                  "estimated_cost"
+                ]
+              },
+              "groups": {
+                "items": {
+                  "required": [
+                    "estimated_cost"
+                  ]
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "totals": {
+                "not": {
+                  "required": [
+                    "estimated_cost"
+                  ]
+                }
+              },
+              "groups": {
+                "items": {
+                  "not": {
+                    "required": [
+                      "estimated_cost"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        },
+        "used_percent": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resets_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duration_minutes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bucket",
+        "window",
+        "used_percent",
+        "resets_at",
+        "duration_minutes",
+        "label"
+      ],
+      "additionalProperties": true
+    },
+    "credit": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "balance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "has_credits": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "unlimited": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bucket",
+        "balance",
+        "unit",
+        "enabled",
+        "has_credits",
+        "unlimited",
+        "limit",
+        "used",
+        "expires_at",
+        "label"
+      ],
+      "additionalProperties": true
+    },
+    "resets": {
+      "type": "object",
+      "properties": {
+        "available_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "expires_at": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/timestamp"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "scope",
+                  "status",
+                  "expires_at"
+                ],
+                "additionalProperties": true
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "available_count",
+        "details"
+      ],
+      "additionalProperties": true
+    },
+    "account": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "cached",
+            "stale",
+            "unavailable"
+          ]
+        },
+        "plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/window"
+          }
+        },
+        "credits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/credit"
+          }
+        },
+        "resets": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/resets"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "age_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "provider",
+        "source",
+        "observed_at",
+        "status",
+        "plan",
+        "auth_mode",
+        "windows",
+        "credits",
+        "resets",
+        "warnings",
+        "error"
+      ],
+      "additionalProperties": true
+    },
+    "quota": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "const": "account"
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/account"
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "accounts"
+      ],
+      "additionalProperties": true
+    },
+    "doctor": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "paths": {
+          "type": "object",
+          "properties": {
+            "codex": {
+              "type": "string"
+            },
+            "claude": {
+              "type": "string"
+            },
+            "pi": {
+              "type": "string"
+            },
+            "omp": {
+              "type": "string"
+            },
+            "cache": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "codex",
+            "claude",
+            "pi",
+            "omp",
+            "cache"
+          ],
+          "additionalProperties": true
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "executable": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "executable",
+              "version"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "coverage": {
+          "$ref": "#/$defs/indexCoverage"
+        },
+        "claude_credentials_file_present": {
+          "type": "boolean"
+        },
+        "claude_keychain_supported": {
+          "type": "boolean"
+        },
+        "index_rebuilt": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "version",
+        "paths",
+        "timezone",
+        "providers",
+        "coverage",
+        "claude_credentials_file_present",
+        "claude_keychain_supported"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

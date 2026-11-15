@@ -5,9 +5,12 @@ import json
 import os
 import sqlite3
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from .cache import REBUILD_HINT, CacheError, index_lock
 from .models import UsageEvent
 from .parsers import METRICS, PARSER_VERSION, parse_claude, parse_codex, parse_omp, parse_pi
 from .paths import Paths
@@ -19,15 +22,25 @@ PARSERS = {"codex": parse_codex, "claude": parse_claude, "pi": parse_pi, "omp": 
 
 class Index:
     def __init__(self, cache: Path):
-        cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.path = cache / "index.sqlite3"
-        self.db = sqlite3.connect(self.path, timeout=30)
-        if os.name != "nt":
-            self.path.chmod(0o600)
+        self._resources = ExitStack()
+        try:
+            self._resources.enter_context(index_lock(cache))
+            self.path = cache / "index.sqlite3"
+            if self.path.is_symlink():
+                raise CacheError("Usage index is a symbolic link; choose a different --cache-dir.")
+            self.db = sqlite3.connect(self.path, timeout=1)
+            self._resources.callback(self.db.close)
+            if os.name != "nt":
+                self.path.chmod(0o600)
+            self._initialize()
+        except BaseException:
+            self._resources.close()
+            raise
+
+    def _initialize(self):
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, 1, SCHEMA_VERSION):
-            self.db.close()
-            raise ValueError("Unsupported cache schema; use a new --cache-dir.")
+            raise CacheError(f"Unsupported usage index schema. {REBUILD_HINT}")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS files (
                 path TEXT PRIMARY KEY, provider TEXT NOT NULL, identity TEXT NOT NULL,
@@ -49,11 +62,12 @@ class Index:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(events)")}
         if version == 1 and "request_input_tokens" not in columns:
             self.db.execute("ALTER TABLE events ADD COLUMN request_input_tokens INTEGER")
-        self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if version != SCHEMA_VERSION:
+            self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.db.commit()
 
     def close(self):
-        self.db.close()
+        self._resources.close()
 
     def __enter__(self):
         return self
@@ -126,6 +140,20 @@ class Index:
             "SELECT identity,offset,mtime_ns,anchor,state,issues FROM files WHERE path=?",
             (filename,),
         ).fetchone()
+        saved_state, saved_issues = {}, {}
+        if saved is not None:
+            try:
+                saved_state, saved_issues = json.loads(saved[4]), json.loads(saved[5])
+                if (
+                    not isinstance(saved_state, dict)
+                    or not isinstance(saved_issues, dict)
+                    or any(type(n) is not int or n < 0 for n in saved_issues.values())
+                    or type(saved[1]) is not int
+                    or saved[1] < 0
+                ):
+                    raise ValueError("Invalid checkpoint")
+            except (ValueError, TypeError) as exc:
+                raise CacheError(f"Usage index checkpoint is damaged. {REBUILD_HINT}") from exc
         with path.open("rb") as handle, self.db:
             stat = os.fstat(handle.fileno())
             identity = f"{stat.st_dev}:{stat.st_ino}"
@@ -133,7 +161,7 @@ class Index:
             issues: Counter[str] = Counter()
             reusable = (
                 saved is not None
-                and json.loads(saved[4]).get("parser_version") == PARSER_VERSION
+                and saved_state.get("parser_version") == PARSER_VERSION
                 and saved[0] == identity
                 and stat.st_size >= saved[1]
                 and self.anchor(handle, saved[1]) == saved[3]
@@ -142,8 +170,8 @@ class Index:
             if reusable:
                 offset, state, issues = (
                     saved[1],
-                    json.loads(saved[4]),
-                    Counter(json.loads(saved[5])),
+                    saved_state,
+                    Counter(saved_issues),
                 )
                 if stat.st_size == offset and stat.st_mtime_ns == saved[2]:
                     return 0, 0, dict(issues)
@@ -219,3 +247,36 @@ class Index:
         ).fetchall()
         self.db.row_factory = None
         return [dict(row) for row in rows]
+
+
+def rebuild_index(paths: Paths, providers: list[str]) -> dict:
+    """Build separately and replace only the derived index after a successful scan."""
+    with index_lock(paths.cache):
+        target = paths.cache / "index.sqlite3"
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise CacheError("Usage index is not a regular file; choose a different --cache-dir.")
+        # Never remove SQLite recovery files or replace a database with pending WAL data.
+        # Older tool versions and external SQLite clients do not honor index.lock.
+        if any(os.path.lexists(f"{target}{suffix}") for suffix in ("-wal", "-shm", "-journal")):
+            raise CacheError(
+                "SQLite recovery files are present. Close other processes and try a normal "
+                "token query first, or choose a new --cache-dir. No index was replaced."
+            )
+        with TemporaryDirectory(prefix=".index-rebuild-", dir=paths.cache) as directory:
+            with Index(Path(directory)) as staged:
+                coverage = staged.sync(paths, providers)
+                if coverage["issues"].get("unreadable_file"):
+                    raise CacheError(
+                        "Rebuild encountered unreadable logs. Check source permissions and retry. "
+                        "No index was replaced."
+                    )
+                if staged.db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                    raise CacheError(
+                        "Rebuilt index failed its integrity check. No index was replaced."
+                    )
+                staged_path = staged.path
+            # Flush the completed database before the atomic, same-filesystem replacement.
+            with staged_path.open("rb+") as handle:
+                os.fsync(handle.fileno())
+            os.replace(staged_path, target)
+        return coverage
