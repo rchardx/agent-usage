@@ -18,6 +18,17 @@ uv run --locked twine check --strict dist/*
 git diff --check
 ```
 
+Run the checkout with `uv run agent-usage`. To make the editable command
+available from any directory, install it once:
+
+```bash
+uv tool install --editable /absolute/path/to/agent-usage
+agent-usage
+```
+
+Ensure the tool executable directory (`uv tool dir --bin`) is on `PATH`;
+`uv tool update-shell` can configure it for a new shell session.
+
 Pre-commit owns repository hygiene, secrets checks, Markdown lint, Ruff lint and
 format checks, and mypy. It manages its own pinned hook environments, including
 the Node environment used by Markdown lint; the application has no Node runtime
