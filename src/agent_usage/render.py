@@ -202,7 +202,6 @@ def bar(value: int, peak: int, width: int) -> str:
 
 def render_daily(report: dict, console: Console, zone) -> None:
     groups = report["groups"]
-    providers = sorted({group["provider"] for group in groups})
     by_day: dict[date, dict[str, dict]] = {}
     for group in groups:
         by_day.setdefault(date.fromisoformat(group["group"]), {})[group["provider"]] = group
@@ -212,42 +211,47 @@ def render_daily(report: dict, console: Console, zone) -> None:
     start = datetime.fromisoformat(period["start"]) if period["start"] else None
     end = datetime.fromisoformat(period["end_exclusive"])
     priced = "pricing" in report
-    # Optional columns are added while they fit: cache hit, output, then the bar.
-    spare = console.width - 22 - 13 * (len(providers) + 1 + priced - (len(providers) == 1))
-    show_cache = spare >= 13
-    spare -= 13 * show_cache
+    # Fixed metric columns scale to any number of providers; optional columns are
+    # added while they fit: input, output, cache read, cache write, hit rate, bar.
+    spare = console.width - 22 - 13 * (2 + priced)
+    show_input = spare >= 13
+    spare -= 13 * show_input
     show_output = spare >= 13
     spare -= 13 * show_output
+    show_cache_read = spare >= 13
+    spare -= 13 * show_cache_read
+    show_cache_write = spare >= 13
+    spare -= 13 * show_cache_write
+    show_hit = spare >= 13
+    spare -= 13 * show_hit
     bar_width = min(40, spare - 4) if spare >= 14 else 0
 
+    totals = report["totals"]["metrics"]
     table = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 2), show_footer=True)
     table.add_column("Day", footer=Text("Total", style="bold"), no_wrap=True)
-    if len(providers) > 1:
-        for provider in providers:
-            known = merge_metrics(
-                [g["metrics"]["total_tokens"] for g in groups if g["provider"] == provider]
-            )
-            table.add_column(provider.title(), footer=metric_text(known), justify="right")
-    table.add_column(
-        "Total",
-        footer=Text(metric_text(report["totals"]["metrics"]["total_tokens"]), style="bold"),
-        justify="right",
-    )
-    if show_cache:
+    if show_input:
+        table.add_column("Input", footer=metric_text(totals["input_tokens"]), justify="right")
+    if show_cache_read:
+        table.add_column(
+            "Cache read", footer=metric_text(totals["cache_read_tokens"]), justify="right"
+        )
+    if show_cache_write:
+        table.add_column(
+            "Cache write", footer=metric_text(totals["cache_write_tokens"]), justify="right"
+        )
+    if show_hit:
         table.add_column(
             "Cache hit",
-            footer=cache_hit_text(
-                report["totals"]["metrics"]["cache_read_tokens"],
-                report["totals"]["metrics"]["input_tokens"],
-            ),
+            footer=cache_hit_text(totals["cache_read_tokens"], totals["input_tokens"]),
             justify="right",
         )
     if show_output:
-        table.add_column(
-            "Output",
-            footer=metric_text(report["totals"]["metrics"]["output_tokens"]),
-            justify="right",
-        )
+        table.add_column("Output", footer=metric_text(totals["output_tokens"]), justify="right")
+    table.add_column(
+        "Total",
+        footer=Text(metric_text(totals["total_tokens"]), style="bold"),
+        justify="right",
+    )
     if priced:
         table.add_column(
             "USD",
@@ -262,7 +266,13 @@ def render_daily(report: dict, console: Console, zone) -> None:
         entries = by_day.get(day, {})
         metrics = {
             key: merge_metrics([g["metrics"][key] for g in entries.values()])
-            for key in ("total_tokens", "cache_read_tokens", "input_tokens", "output_tokens")
+            for key in (
+                "total_tokens",
+                "input_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "output_tokens",
+            )
         }
         day_start = datetime.combine(day, time(), zone)
         day_end = datetime.combine(day + timedelta(days=1), time(), zone)
@@ -271,15 +281,17 @@ def render_daily(report: dict, console: Console, zone) -> None:
     peak = max(row[2]["total_tokens"]["known_tokens"] for row in rows)
     for day, entries, metrics, partial in rows:
         cells = [Text(f"{day:%Y-%m-%d %a}" + (" ·" if partial else "  "))]
-        if len(providers) > 1:
-            for provider in providers:
-                group = entries.get(provider)
-                cells.append(metric_text(group["metrics"]["total_tokens"]) if group else "0")
-        cells.append(Text(metric_text(metrics["total_tokens"]), style="bold"))
-        if show_cache:
+        if show_input:
+            cells.append(metric_text(metrics["input_tokens"]))
+        if show_cache_read:
+            cells.append(metric_text(metrics["cache_read_tokens"]))
+        if show_cache_write:
+            cells.append(metric_text(metrics["cache_write_tokens"]))
+        if show_hit:
             cells.append(cache_hit_text(metrics["cache_read_tokens"], metrics["input_tokens"]))
         if show_output:
             cells.append(metric_text(metrics["output_tokens"]))
+        cells.append(Text(metric_text(metrics["total_tokens"]), style="bold"))
         if priced:
             costs = [g["estimated_cost"] for g in entries.values() if "estimated_cost" in g]
             cells.append(Text(cost_text(merge_costs(costs) if costs else None), style="green"))
@@ -293,7 +305,9 @@ def render_daily(report: dict, console: Console, zone) -> None:
     notes = ["  · partial day: the selected period starts or ends within it."]
     if bar_width:
         notes.append("  Bars scale to the busiest day.")
-    notes.append("  Cache hit = cache read ÷ input. Use --detail for the full token breakdown.")
+    if show_hit:
+        notes.append("  Cache hit = cache read ÷ input.")
+    notes.append("  All providers merge into each day; use --detail for per-provider breakdowns.")
     for note in notes:
         console.print(Text(note, style="dim"))
 

@@ -80,11 +80,13 @@ places account panels side by side on wide terminals. Tokens use decimal
 abbreviations: **K = 1,000; M = 1,000,000; B = 1,000,000,000; T = 1,000,000,000,000**.
 JSON always retains exact integer token counts.
 
-`--by day` prints one row per calendar day in the reporting timezone, with
-per-provider totals, cache hit rate (cache read ÷ input), output, cost, and a bar
-scaled to the busiest day. Days without records inside the range show as zero;
-days cut by the period boundary are marked partial. Add `--detail` for the full
-per-provider breakdown of each day.
+`--by day` prints one row per calendar day in the reporting timezone with fixed
+metric columns — input, cache read/write, cache hit rate (cache read ÷ input),
+output, total, and cost — plus a bar scaled to the busiest day. Columns adapt to
+the terminal width, and all providers merge into each day's row, so the layout
+stays stable no matter how many harnesses are installed. Days without records
+inside the range show as zero; days cut by the period boundary are marked
+partial. Add `--detail` for the full per-provider breakdown of each day.
 The default `agent-usage` report uses this daily view; its JSON output keeps
 provider totals, as with `agent-usage tokens --json`.
 
