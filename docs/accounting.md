@@ -11,8 +11,8 @@ Account allowances have a separate scope; see [Providers](providers.md).
 | --- | --- | --- | --- |
 | Input, including cache | `input_tokens` | `input_tokens` + cache read + cache creation | `usage.input` + `usage.cacheRead` + `usage.cacheWrite` |
 | Fresh input | Input minus cache read/write, when both are known | `input_tokens` | `usage.input` |
-| Cache read | `cached_input_tokens` | `cache_read_input_tokens` | `usage.cacheRead` |
-| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens` | `usage.cacheWrite` |
+| Cache read | `cached_input_tokens` | `cache_read_input_tokens`, if present | `usage.cacheRead` |
+| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens`, if present | `usage.cacheWrite` |
 | Cache write, 5m / 1h TTL | Not currently reported | `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` | Not currently reported |
 | Output, including reasoning | `output_tokens` | `output_tokens` | `usage.output` |
 | Reasoning | `reasoning_output_tokens`, if present | `output_tokens_details.thinking_tokens`, if present | `usage.reasoning` (pi) / `usage.reasoningTokens` (omp), if present |
@@ -52,19 +52,25 @@ request is counted for that transition and a coverage note is recorded. Replayed
 fork history before the child session's creation time is excluded. Initial
 cumulative snapshots that lack per-request attribution are marked in coverage.
 The first session metadata record owns a Codex transcript; embedded ancestor
-metadata cannot change a child session's identity. Parser version changes
-automatically invalidate file checkpoints and rebuild the derived index.
+metadata cannot change a child session's identity. When `session_meta` records a
+non-`openai` `model_provider`, models are namespaced with that provider. Parser
+version changes automatically invalidate file checkpoints and rebuild the derived
+index.
 
 Claude's repeated content blocks and streaming updates are merged by request
-and message identity using monotonic component counts. Copied transcripts are
+and message identity using monotonic component counts. Third-party
+Anthropic-compatible gateways that omit cache fields retain the event with
+unknown cache coverage rather than dropping usage. Copied transcripts are
 deduplicated across files. Subagent transcripts are included. Historical events
 are not assigned to whichever account happens to be logged in today.
 
 pi and omp share one session schema with per-request assistant usage records;
 no differencing is needed. Events are keyed by response or row identity within
-their session. Models are reported as `responseModel` when present, namespaced
-with the upstream provider that served the request. Sidecar files stored next
-to a session transcript (such as `changes.jsonl`) are never parsed as usage.
+their session. Models are reported as `responseModel` when present and always
+retain their serving upstream prefix (including multi-segment gateway IDs such as
+`openrouter/google/gemini-2.5-pro`). Leading `models/` API resource prefixes are
+stripped across harnesses. Sidecar files stored next to a session transcript
+(such as `changes.jsonl`) are never parsed as usage.
 
 ### History limitations
 
@@ -75,17 +81,25 @@ be reconstructed; `history_complete` is always false.
 
 ## Cost estimates
 
-By default, token reports fetch the public models.dev catalog and match exact
-model IDs under `openai` for Codex and `anthropic` for Claude Code. Explicit
-`openai/` or `anthropic/` prefixes are accepted; model aliases are not guessed.
-pi and omp models first match through their explicit `upstream/model` prefix
-(for example `deepseek/deepseek-v4-flash`). When the upstream is a gateway absent
-from the catalog (for example `radius/kimi-k3`), the model id falls back to an
-exact match in first-party channels — `anthropic`, `openai`, `google`,
-`deepseek`, `moonshotai`, `zai`, `xai`, `minimax`, `qwen`, `meta`, `mistralai`,
-in that order — so the real model is priced at its own channel's rates.
-Gateway-only aliases (such as Radius's `balanced`/`cheap` profiles) and ids with
-no exact first-party match stay unpriced.
+By default, token reports fetch the public models.dev catalog. Explicit
+`upstream/model` prefixes resolve to their catalog provider first (including
+known upstream mappings such as `vercel-ai-gateway` to `vercel`, `openai-codex`
+to `openai`, `gcp`/`vertex` to `google-vertex`, `bedrock`/`amazonBedrock` to
+`amazon-bedrock`, `fireworks` to `fireworks-ai`, and `together` to `togetherai`).
+When an upstream is a gateway absent from the catalog (for example
+`radius/gemini-2.5-pro` or `proxy/google/gemini-2.5-pro`), resolution uses an
+explicit catalog sub-prefix when present or falls back to an exact model-id match
+in first-party and cloud channels — `anthropic`, `openai`, `google`,
+`google-vertex`, `google-vertex-anthropic`, `amazon-bedrock`, `deepseek`,
+`moonshotai`, `zai`, `xai`, `minimax`, `alibaba`, `meta`, `mistral`, in that
+order — so the real model is priced at its own channel's rates. Unprefixed Codex
+and Claude Code models match `openai` and `anthropic` first (plus Claude's
+`google-vertex-anthropic` / `amazon-bedrock` cloud IDs and unambiguous `gemini-*`
+IDs on `google` / `google-vertex`), without cross-matching arbitrary unprefixed
+IDs across unrelated channels.
+Known catalog prefixes never fall back to another channel; gateway-only aliases
+(such as Radius's `balanced`/`cheap` profiles) and ids with no exact match stay
+unpriced.
 Prices are USD per million tokens. The catalog is cached for 24 hours;
 `--refresh` refreshes it, `--offline` uses cached prices without network access,
 and `--no-cost` skips pricing altogether. Failed refreshes retain a dated, visibly
@@ -110,9 +124,16 @@ Costs are calculated on usage records before grouping:
 - Claude Code 5-minute cache writes use the catalog's `cache_write` rate.
   One-hour writes use 2× the input rate, following
   [Anthropic's cache pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
-  Claude Code writes without a known TTL breakdown remain unpriced; other agents
-  record no TTL split, so their writes use the `cache_write` rate even on the
-  `anthropic` channel.
+  Claude Code writes on Anthropic channels without a known TTL breakdown remain
+  unpriced; other agents and non-Anthropic channels use the `cache_write` rate.
+  For non-Claude events whose models define no separate `cache_write` rate in
+  either their base table or context tiers (such as OpenAI and Google Gemini),
+  omitted `cache_write_tokens` still price non-`cache_read` input at the standard
+  `input` rate while keeping the `cache_write_tokens` metric unknown.
+- Google Gemini implicit cache hits (`cachedContentTokenCount`) map to cache
+  reads, thinking tokens (`thoughtsTokenCount`) are included in output, and 200k
+  context tiers use each request's input size. Modality-specific audio rates are
+  not separated when logs record combined token counts.
 - Missing models, required prices, or required usage details produce unknown
   costs, not zero. The table shows priced-record coverage and a marked known
   subtotal when coverage is incomplete.

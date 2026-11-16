@@ -84,7 +84,12 @@ class Index:
         return hashlib.sha256(data).hexdigest()
 
     def add(self, path: str, event: UsageEvent):
-        data = {"path": path, **asdict(event)}
+        raw = asdict(event)
+        if raw.pop("multi_request"):
+            # Negative sentinel marks multi-request/iterated rows so they stay distinct
+            # from NULL (pending cache fields that a later streaming update can complete).
+            raw["request_input_tokens"] = -1
+        data = {"path": path, **raw}
         fields = ",".join(data)
         placeholders = ",".join("?" for _ in data)
         # Streaming rows may update a message's counts. Keep monotonic maxima per component.
@@ -98,8 +103,11 @@ class Index:
             f"INSERT INTO events ({fields}) VALUES ({placeholders}) "
             f"ON CONFLICT(path,provider,event_id) DO UPDATE SET {updates}, "
             "request_input_tokens=CASE "
-            "WHEN events.request_input_tokens IS NULL OR excluded.request_input_tokens IS NULL "
-            "THEN NULL ELSE MAX(events.request_input_tokens,excluded.request_input_tokens) END, "
+            "WHEN COALESCE(events.request_input_tokens,0)<0 "
+            "OR COALESCE(excluded.request_input_tokens,0)<0 THEN -1 "
+            "WHEN events.request_input_tokens IS NULL THEN excluded.request_input_tokens "
+            "WHEN excluded.request_input_tokens IS NULL THEN events.request_input_tokens "
+            "ELSE MAX(events.request_input_tokens,excluded.request_input_tokens) END, "
             "timestamp=MIN(events.timestamp,excluded.timestamp)",
             list(data.values()),
         )
@@ -237,8 +245,8 @@ class Index:
         # Deduplicate copied/archived transcripts using provider request identities.
         columns = ",".join(f"MAX({key}) AS {key}" for key in METRICS)
         columns += (
-            ",CASE WHEN COUNT(request_input_tokens)=COUNT(*) THEN MAX(request_input_tokens) "
-            "ELSE NULL END AS request_input_tokens"
+            ",CASE WHEN MIN(COALESCE(request_input_tokens,0))<0 THEN NULL "
+            "ELSE MAX(request_input_tokens) END AS request_input_tokens"
         )
         rows = self.db.execute(
             f"SELECT provider,event_id,MIN(session) AS session,MIN(timestamp) AS timestamp,"

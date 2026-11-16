@@ -2,11 +2,12 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import agent_session, agent_usage, claude_usage, write_rows
+from conftest import agent_session, agent_usage, claude_usage, codex_meta, codex_usage, write_rows
 from typer.testing import CliRunner
 
 from agent_usage.cli import app
 from agent_usage.models import AccountReport, CreditBalance, ProbeError, QuotaWindow
+from agent_usage.pricing import Pricing
 from agent_usage.reports import save_snapshot, snapshot_path
 
 runner = CliRunner()
@@ -238,6 +239,73 @@ def test_doctor_reports_non_subscription_auth_without_exposing_secrets(paths, mo
     assert doctor["claude_credentials_file_present"] is False
     assert "test-codex-sentinel" not in result.output
     assert "test-claude-sentinel" not in result.output
+
+
+def test_gemini_tokens_and_costs_across_all_four_harnesses(paths, monkeypatch):
+    stamp = recent()
+    # 1. Codex with custom google model_provider
+    write_rows(
+        paths.codex / "sessions/gem.jsonl",
+        [
+            codex_meta("codex-gem", model_provider="google"),
+            {"type": "turn_context", "payload": {"cwd": "/p", "model": "gemini-2.5-flash"}},
+            codex_usage(1000, 200, stamp=stamp),
+        ],
+    )
+    # 2. Claude Code via custom gateway running Gemini
+    claude_gem = claude_usage("msg-gem", stamp=stamp, output=200)
+    claude_gem["message"]["model"] = "models/gemini-2.5-flash"
+    claude_gem["message"]["usage"]["cache_creation_input_tokens"] = 0
+    claude_gem["message"]["usage"]["cache_creation"] = {}
+    write_rows(paths.claude / "projects/gem.jsonl", [claude_gem])
+    # 3. pi via direct Google Gemini API
+    pi_gem = agent_usage("resp-pi-gem", stamp=stamp, cacheWrite=0)
+    pi_gem["message"]["provider"] = "google"
+    pi_gem["message"]["model"] = "gemini-2.5-flash"
+    write_rows(
+        paths.pi / "sessions/-p/2026-10-01T00-00-00-000Z_pi.jsonl",
+        [agent_session("pi-s"), pi_gem],
+    )
+    # 4. omp via OpenRouter Gemini
+    omp_gem = agent_usage("resp-omp-gem", stamp=stamp, cacheWrite=0)
+    omp_gem["message"]["provider"] = "openrouter"
+    omp_gem["message"]["model"] = "google/gemini-2.5-flash"
+    write_rows(
+        paths.omp / "sessions/-p/2026-10-01T00-00-00-000Z_omp.jsonl",
+        [agent_session("omp-s"), omp_gem],
+    )
+
+    monkeypatch.setattr(
+        "agent_usage.cli.load_pricing",
+        lambda *args, **kwargs: Pricing(
+            {
+                "google": {
+                    "gemini-2.5-flash": {"cost": {"input": 0.3, "output": 2.5, "cache_read": 0.03}}
+                },
+                "openrouter": {
+                    "google/gemini-2.5-flash": {
+                        "cost": {"input": 0.35, "output": 2.6, "cache_read": 0.035}
+                    }
+                },
+            },
+            "cached",
+            "2026-10-05T00:00:00+00:00",
+        ),
+    )
+    result = runner.invoke(app, [*options(paths), "tokens", "--all", "--by", "model", "--json"])
+    assert result.exit_code == 0, result.output
+    tokens = json.loads(result.output)["tokens"]
+    assert tokens["totals"]["events"] == 4
+    assert tokens["totals"]["estimated_cost"]["priced_events"] == 4
+    assert tokens["totals"]["estimated_cost"]["amount"] is not None
+    assert tokens["totals"]["estimated_cost"]["unpriced_details"] == []
+    grouped = {(g["provider"], g["group"]) for g in tokens["groups"]}
+    assert grouped == {
+        ("codex", "google/gemini-2.5-flash"),
+        ("claude", "gemini-2.5-flash"),
+        ("pi", "google/gemini-2.5-flash"),
+        ("omp", "openrouter/google/gemini-2.5-flash"),
+    }
 
 
 def recent():

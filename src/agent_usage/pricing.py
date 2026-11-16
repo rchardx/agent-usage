@@ -16,42 +16,121 @@ SOURCE = "https://models.dev/api.json?type=all"
 CACHE_SECONDS = 86400
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 PROVIDERS = {"codex": "openai", "claude": "anthropic"}
-# First-party channels, in preference order. Gateway events whose upstream is not
-# in the catalog (for example "radius/kimi-k3") fall back to an exact model-id
-# match in these providers, so the model is priced at its own channel's rates.
+# Explicit harness upstream identifiers that map to a different models.dev key.
+UPSTREAM_ALIASES = {
+    "amazonBedrock": "amazon-bedrock",
+    "bedrock": "amazon-bedrock",
+    "fireworks": "fireworks-ai",
+    "gcp": "google-vertex",
+    "mistralai": "mistral",
+    "openai-codex": "openai",
+    "qwen": "alibaba",
+    "together": "togetherai",
+    "vercel-ai-gateway": "vercel",
+    "vertex": "google-vertex",
+}
+# First-party and cloud channels, in preference order. Gateway events whose
+# upstream is not in the catalog (for example "radius/gemini-2.5-pro") fall back
+# to an exact model-id match in these providers at the model's own channel rates.
 FIRST_PARTY = (
     "anthropic",
     "openai",
     "google",
+    "google-vertex",
+    "google-vertex-anthropic",
+    "amazon-bedrock",
     "deepseek",
     "moonshotai",
     "zai",
     "xai",
     "minimax",
+    "alibaba",
     "qwen",
     "meta",
+    "mistral",
     "mistralai",
+)
+ANTHROPIC_TTL_PROVIDERS = frozenset({"anthropic", "google-vertex-anthropic", "amazon-bedrock"})
+KNOWN_UPSTREAMS = frozenset(
+    (*FIRST_PARTY, *UPSTREAM_ALIASES, *UPSTREAM_ALIASES.values(), "openrouter", "vercel", "azure")
 )
 MILLION = Decimal(1_000_000)
 
 
+def _strip_models_prefix(model: str) -> str:
+    if model.startswith("models/") and len(model) > len("models/"):
+        return model.removeprefix("models/")
+    return model
+
+
+def _catalog_key(prefix: str, models: dict) -> str | None:
+    if prefix in models:
+        return prefix
+    mapped = UPSTREAM_ALIASES.get(prefix)
+    if mapped and mapped in models:
+        return mapped
+    return None
+
+
+def _first_party_match(model_id: str, models: dict) -> tuple[str, str] | None:
+    for candidate in FIRST_PARTY:
+        if model_id in models.get(candidate, {}):
+            return candidate, model_id
+    return None
+
+
 def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None, str]:
     """Catalog provider and model id for an agent event; no alias guessing."""
-    catalog = PROVIDERS.get(provider)
-    if catalog:
-        return catalog, model.removeprefix(f"{catalog}/")
-    # pi/omp run many upstreams; trust only an explicit "provider/model" prefix.
-    prefix, separator, rest = model.partition("/")
+    clean = _strip_models_prefix(model)
+    prefix, separator, rest = clean.partition("/")
     if separator and rest:
-        if prefix in models:
-            return prefix, rest
-        # Unknown upstream (a gateway such as radius): price the real model at
-        # its first-party channel, exact id only; gateway-only aliases stay
-        # unpriced.
-        for candidate in FIRST_PARTY:
-            if rest in models.get(candidate, {}):
-                return candidate, rest
-    return None, model
+        catalog = _catalog_key(prefix, models)
+        if catalog is not None:
+            return catalog, _strip_models_prefix(rest)
+        if prefix in KNOWN_UPSTREAMS:
+            return UPSTREAM_ALIASES.get(prefix, prefix), _strip_models_prefix(rest)
+        # Unknown gateway prefix (for example "radius/gemini-2.5-pro" or
+        # "my-proxy/google/gemini-2.5-pro"): resolve an explicit catalog
+        # sub-prefix or an exact first-party model id; gateway aliases stay unpriced.
+        rest_clean = _strip_models_prefix(rest)
+        sub_prefix, sub_sep, sub_rest = rest_clean.partition("/")
+        if sub_sep and sub_rest:
+            sub_catalog = _catalog_key(sub_prefix, models)
+            if sub_catalog is not None:
+                return sub_catalog, _strip_models_prefix(sub_rest)
+            if sub_prefix in KNOWN_UPSTREAMS:
+                return UPSTREAM_ALIASES.get(sub_prefix, sub_prefix), _strip_models_prefix(sub_rest)
+        found = _first_party_match(rest_clean, models)
+        if found is not None:
+            return found
+        return (PROVIDERS[provider], clean) if provider in PROVIDERS else (None, clean)
+
+    default_catalog = PROVIDERS.get(provider)
+    if default_catalog:
+        if clean in models.get(default_catalog, {}):
+            return default_catalog, clean
+        if provider == "claude":
+            for cloud in ("google-vertex-anthropic", "amazon-bedrock"):
+                if clean in models.get(cloud, {}):
+                    return cloud, clean
+        if clean.startswith("gemini-"):
+            for google_channel in ("google", "google-vertex"):
+                if clean in models.get(google_channel, {}):
+                    return google_channel, clean
+        return default_catalog, clean
+    return None, clean
+
+
+def _has_cache_write_rate(base_cost: dict) -> bool:
+    if "cache_write" in base_cost:
+        return True
+    over_200k = base_cost.get("context_over_200k")
+    if isinstance(over_200k, dict) and "cache_write" in over_200k:
+        return True
+    tiers = base_cost.get("tiers")
+    return isinstance(tiers, list) and any(
+        isinstance(item, dict) and "cache_write" in item for item in tiers
+    )
 
 
 def money(value: Decimal) -> str:
@@ -113,17 +192,30 @@ class Pricing:
         if not isinstance(model, dict):
             return {"amount": None, "reason": "model_not_priced", "model": model_id}
         try:
-            cost = self._rates(model["cost"], event)
+            base_cost = model["cost"]
+            cost = self._rates(base_cost, event)
             read, write = event.get("cache_read_tokens"), event.get("cache_write_tokens")
-            if read is None or write is None:
+            if read is None:
                 raise ValueError("unknown_cache_usage")
-            fresh = event["input_tokens"] - read - write
+            if write is None:
+                if (
+                    event.get("provider") == "claude"
+                    or provider in ANTHROPIC_TTL_PROVIDERS
+                    or _has_cache_write_rate(base_cost)
+                ):
+                    raise ValueError("unknown_cache_usage")
+                effective_write = 0
+            else:
+                effective_write = write
+            fresh = event["input_tokens"] - read - effective_write
             if fresh < 0:
                 raise ValueError("inconsistent_cache_usage")
             parts = {
                 "fresh_input": fresh * rate(cost, "input") / MILLION,
                 "cache_read": read * rate(cost, "cache_read") / MILLION if read else Decimal(0),
-                "cache_write": self._writes(cost, event, write, event["provider"]),
+                "cache_write": self._writes(
+                    cost, event, effective_write, event["provider"], provider
+                ),
             }
             output_price = rate(cost, "output")
             reasoning_price = rate(cost, "reasoning") if "reasoning" in cost else output_price
@@ -172,12 +264,20 @@ class Pricing:
         return selected
 
     @staticmethod
-    def _writes(cost: dict, event: dict, write: int, agent: str | None) -> Decimal:
+    def _writes(
+        cost: dict,
+        event: dict,
+        write: int,
+        agent: str | None,
+        pricing_provider: str | None = None,
+    ) -> Decimal:
         if write == 0:
             return Decimal(0)
-        # Only Claude Code records carry a 5m/1h TTL split; other agents' writes
-        # use the catalog cache_write (5m) rate even on the anthropic channel.
-        if agent != "claude":
+        # Only Claude Code on Anthropic channels carries a 5m/1h TTL split; other
+        # agents and non-Anthropic gateways use the catalog cache_write rate.
+        if agent != "claude" or (
+            pricing_provider is not None and pricing_provider not in ANTHROPIC_TTL_PROVIDERS
+        ):
             return write * rate(cost, "cache_write") / MILLION
         short = event.get("cache_write_5m_tokens")
         long = event.get("cache_write_1h_tokens")

@@ -277,3 +277,159 @@ def test_streaming_and_copied_iteration_records_keep_request_size_unknown(paths)
         events = index.events(paths, ["claude"])
     assert len(events) == 1
     assert events[0]["request_input_tokens"] is None
+
+
+def test_codex_custom_model_provider_and_default_openai_namespacing(paths):
+    gemini_turn = {
+        "type": "turn_context",
+        "payload": {"cwd": "/example", "model": "models/gemini-2.5-pro"},
+    }
+    openai_turn = {"type": "turn_context", "payload": {"cwd": "/example", "model": "gpt-5.4"}}
+    write_rows(
+        paths.codex / "sessions/gemini.jsonl",
+        [codex_meta("gem-s", model_provider="google"), gemini_turn, codex_usage(100, 20)],
+    )
+    write_rows(
+        paths.codex / "sessions/openai.jsonl",
+        [codex_meta("oai-s", model_provider="openai"), openai_turn, codex_usage(80, 10)],
+    )
+    with Index(paths.cache) as index:
+        index.sync(paths, ["codex"])
+        by_session = {e["session"]: e for e in index.events(paths, ["codex"])}
+    assert by_session["gem-s"]["model"] == "google/gemini-2.5-pro"
+    assert by_session["oai-s"]["model"] == "gpt-5.4"
+
+
+def test_pi_and_omp_preserve_gateway_prefix_on_slashed_models_and_strip_models_prefix(paths):
+    openrouter_row = agent_usage("resp-or", cacheWrite=0)
+    openrouter_row["message"]["provider"] = "openrouter"
+    openrouter_row["message"]["model"] = "google/gemini-2.5-pro"
+
+    vertex_change = {
+        "type": "model_change",
+        "provider": "google-vertex",
+        "modelId": "gemini-3.1-pro-preview",
+    }
+    inherited_row = agent_usage("resp-vtx", cacheWrite=0)
+    del inherited_row["message"]["provider"]
+    del inherited_row["message"]["model"]
+
+    overridden_provider_row = agent_usage("resp-ovr", cacheWrite=0)
+    overridden_provider_row["message"]["provider"] = "google"
+    del overridden_provider_row["message"]["model"]
+
+    write_rows(
+        paths.pi / "sessions/-example/2026-10-01T00-00-00-000Z_gem.jsonl",
+        [
+            agent_session("pi-gem"),
+            openrouter_row,
+            vertex_change,
+            inherited_row,
+            overridden_provider_row,
+        ],
+    )
+
+    omp_row = agent_usage("resp-omp", cacheWrite=0)
+    omp_row["message"]["provider"] = "google"
+    omp_row["message"]["model"] = "gemini-2.5-flash"
+    omp_row["message"]["responseModel"] = "models/gemini-2.5-flash"
+    write_rows(
+        paths.omp / "sessions/-example/2026-10-01T00-00-00-000Z_omp.jsonl",
+        [agent_session("omp-gem"), omp_row],
+    )
+
+    with Index(paths.cache) as index:
+        index.sync(paths, ["pi", "omp"])
+        events = index.events(paths, ["pi", "omp"])
+    models = {(e["provider"], e["model"]) for e in events}
+    assert models == {
+        ("pi", "openrouter/google/gemini-2.5-pro"),
+        ("pi", "google-vertex/gemini-3.1-pro-preview"),
+        ("pi", "google/gemini-3.1-pro-preview"),
+        ("omp", "google/gemini-2.5-flash"),
+    }
+
+
+def test_claude_gateway_omitted_cache_fields_keep_unknowns_without_dropping_event(paths):
+    gateway_row = claude_usage("msg-gw")
+    gateway_row["message"]["model"] = "models/gemini-2.5-pro"
+    gateway_row["message"]["usage"] = {"input_tokens": 50, "output_tokens": 12}
+
+    missing_core = claude_usage("msg-bad")
+    missing_core["message"]["usage"] = {"input_tokens": 50}
+
+    write_rows(paths.claude / "projects/gateway.jsonl", [gateway_row, missing_core])
+    with Index(paths.cache) as index:
+        coverage = index.sync(paths, ["claude"])
+        events = index.events(paths, ["claude"])
+    assert coverage["issues"] == {"claude_incomplete_usage": 1}
+    assert len(events) == 1
+    assert events[0]["model"] == "gemini-2.5-pro"
+    assert events[0]["input_tokens"] == 50
+    assert events[0]["output_tokens"] == 12
+    assert events[0]["cache_read_tokens"] is None
+    assert events[0]["cache_write_tokens"] is None
+    assert events[0]["request_input_tokens"] is None
+
+
+def test_claude_streaming_completion_recovers_request_size_unless_iterated(paths):
+    from test_pricing import gemini_catalog
+
+    partial = claude_usage("msg-stream")
+    partial["message"]["model"] = "models/gemini-2.5-pro"
+    partial["message"]["usage"] = {"input_tokens": 200_000, "output_tokens": 10}
+
+    complete = claude_usage("msg-stream", output=50)
+    complete["message"]["model"] = "models/gemini-2.5-pro"
+    complete["message"]["usage"] = {
+        "input_tokens": 200_000,
+        "cache_read_input_tokens": 100_000,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 50,
+    }
+
+    iterated_partial = claude_usage("msg-iter")
+    iterated_partial["requestId"] = "req-iter"
+    iterated_partial["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": 5,
+        "iterations": [{"input_tokens": 25}],
+    }
+    iterated_complete = claude_usage("msg-iter", output=20)
+    iterated_complete["requestId"] = "req-iter"
+
+    write_rows(
+        paths.claude / "projects/stream.jsonl",
+        [partial, complete, iterated_partial, iterated_complete],
+    )
+    with Index(paths.cache) as index:
+        index.sync(paths, ["claude"])
+        by_msg = {e["output_tokens"]: e for e in index.events(paths, ["claude"])}
+
+    recovered = by_msg[50]
+    assert recovered["request_input_tokens"] == 300_000
+    assert gemini_catalog().estimate(recovered)["amount"] is not None
+
+    # A row with iterations stays disqualified even after a later row supplies cache fields.
+    assert by_msg[20]["request_input_tokens"] is None
+
+
+def test_parser_v3_checkpoint_rebuilds_for_v4_model_namespaces(paths):
+    row = agent_usage("resp-or", cacheWrite=0)
+    row["message"]["provider"] = "openrouter"
+    row["message"]["model"] = "google/gemini-2.5-pro"
+    write_rows(
+        paths.pi / "sessions/-example/2026-10-01T00-00-00-000Z_v3.jsonl",
+        [agent_session("pi-v3"), row],
+    )
+    with Index(paths.cache) as index:
+        index.sync(paths, ["pi"])
+        state = json.loads(index.db.execute("SELECT state FROM files").fetchone()[0])
+        state["parser_version"] = 3
+        index.db.execute("UPDATE files SET state=?", (json.dumps(state),))
+        index.db.execute("UPDATE events SET model='google/gemini-2.5-pro'")
+        index.db.commit()
+        coverage = index.sync(paths, ["pi"])
+        events = index.events(paths, ["pi"])
+    assert coverage["files_updated"] == 1
+    assert events[0]["model"] == "openrouter/google/gemini-2.5-pro"
