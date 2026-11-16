@@ -55,9 +55,10 @@ Global options precede the subcommand. `tokens`, `quota` and `doctor` also accep
 - `quota` has account scope. Each account has a `status` of `ok`, `cached`, `stale`
   or `unavailable`, with windows, credits, reset information and warnings/errors.
   `age_seconds` is optional; do not assume an unavailable account has a snapshot.
-- `doctor` contains CLI discovery, configured paths and parser coverage. The
-  optional `index_rebuilt: true` confirms an explicit successful rebuild; it is
-  absent from ordinary diagnostics. Doctor output is not anonymized.
+- `doctor` contains CLI discovery, configured paths, detected local auth modes
+  and parser coverage. The optional `index_rebuilt: true` confirms an explicit
+  successful rebuild; it is absent from ordinary diagnostics. Doctor output is
+  not anonymized.
 
 ## Numbers, missing values and costs
 

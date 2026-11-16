@@ -10,6 +10,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .allowances import NON_SUBSCRIPTION_LABELS
+
 
 def compact_number(value: int | float | Decimal) -> str:
     number = Decimal(str(value))
@@ -49,6 +51,28 @@ def account_panel(account: dict, zone) -> Panel:
         else "no snapshot"
     )
     contents: list[Text | Table] = [Text(f"{status} · {stamp}", style="dim"), Text("")]
+    auth_label = NON_SUBSCRIPTION_LABELS.get(account.get("auth_mode") or "")
+    if (
+        auth_label
+        and not account["windows"]
+        and not account["credits"]
+        and not account.get("resets")
+        and not account.get("error")
+    ):
+        contents.append(Text(f"{auth_label} mode · subscription allowances not applicable"))
+        contents.append(Text(""))
+        contents.append(
+            Text("Use local token reports and API cost estimates for usage tracking.", style="dim")
+        )
+        title_detail = account.get("plan") or auth_label
+        return Panel(
+            Group(*contents),
+            title=Text(f"{account['provider'].upper()}  ·  {title_detail}", style="bold"),
+            title_align="left",
+            padding=(1, 2),
+            border_style="blue",
+            expand=True,
+        )
     table = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 1), leading=1)
     table.add_column("Allowance", ratio=2)
     table.add_column("Used", justify="right", ratio=1)
@@ -114,7 +138,9 @@ def account_panel(account: dict, zone) -> Panel:
         contents.extend((Text(""), Text(account["error"], style="yellow")))
     for warning in account.get("warnings", []):
         contents.append(Text(warning, style="dim"))
-    title = f"{account['provider'].upper()}  ·  {account.get('plan') or 'unknown plan'}"
+    title = (
+        f"{account['provider'].upper()}  ·  {account.get('plan') or auth_label or 'unknown plan'}"
+    )
     return Panel(
         Group(*contents),
         title=Text(title, style="bold"),

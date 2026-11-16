@@ -143,6 +143,27 @@ def test_combined_and_doctor_outputs(paths, monkeypatch, validator, command):
         assert data["doctor"].get("index_rebuilt", False) == ("--rebuild-index" in command)
 
 
+@pytest.mark.parametrize("command", [[], ["quota"], ["doctor"]])
+def test_non_subscription_modes_validate_against_schema(paths, monkeypatch, validator, command):
+    monkeypatch.setattr("agent_usage.cli.shutil.which", lambda _: None)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-contract-sentinel")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    result = runner.invoke(app, [*options(paths), "--offline", "--no-cost", *command, "--json"])
+    data = validate_result(result, validator)
+    assert "test-openai-contract-sentinel" not in result.stdout
+    if "quota" in data:
+        by_provider = {a["provider"]: a for a in data["quota"]["accounts"]}
+        assert by_provider["codex"]["status"] == "unavailable"
+        assert by_provider["codex"]["auth_mode"] == "apiKey"
+        assert by_provider["codex"]["error"] is None
+        assert by_provider["claude"]["status"] == "unavailable"
+        assert by_provider["claude"]["auth_mode"] == "vertex"
+        assert by_provider["claude"]["error"] is None
+    if "doctor" in data:
+        assert data["doctor"]["auth"]["codex"]["auth_mode"] == "apiKey"
+        assert data["doctor"]["auth"]["claude"]["auth_mode"] == "vertex"
+
+
 def sample():
     return json.loads((EXAMPLES / "combined-partial.json").read_text(encoding="utf-8"))
 
