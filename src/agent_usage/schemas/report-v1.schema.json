@@ -962,6 +962,31 @@
         "coverage": {
           "$ref": "#/$defs/indexCoverage"
         },
+        "auth": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "auth_mode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "auth_mode",
+              "source"
+            ],
+            "additionalProperties": true
+          }
+        },
         "claude_credentials_file_present": {
           "type": "boolean"
         },

@@ -17,6 +17,14 @@ CREDIT_LABELS = {
     "claude": {"extra_usage": "Extra usage", "spend": "Spend balance"},
 }
 
+NON_SUBSCRIPTION_LABELS = {
+    **dict.fromkeys(("apiKey", "api_key"), "API key"),
+    "customGateway": "Custom gateway",
+    **dict.fromkeys(("gcp", "vertex"), "Google Cloud Vertex AI"),
+    **dict.fromkeys(("amazonBedrock", "bedrock"), "Amazon Bedrock"),
+    "foundry": "Anthropic Foundry",
+}
+
 
 def recognized_account(report: dict) -> dict:
     """Apply current recognition rules to snapshots, including older cached reports."""

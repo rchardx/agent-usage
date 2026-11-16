@@ -70,6 +70,26 @@ account caching is disabled. Claude OS-keychain credentials and automatic OAuth
 refresh are not implemented; refresh an expired login using Claude Code. Codex
 manages its own authentication through its installed App Server.
 
+### Non-subscription and API-key modes
+
+Standard API keys, custom gateways, and cloud-provider credentials (such as
+Google Cloud Vertex AI, Amazon Bedrock, or Anthropic Foundry) do not have
+subscription quota windows, and inference keys do not expose billing balances.
+When Codex (`OPENAI_API_KEY`, `CODEX_API_KEY`, `auth.json` API keys, or a
+non-OpenAI `model_provider` in `config.toml`) or Claude Code
+(`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `settings.json` environment or
+`apiKeyHelper`, or `CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_BEDROCK` /
+`CLAUDE_CODE_USE_FOUNDRY`) uses non-subscription authentication:
+
+- Account status remains `unavailable` with `error: null`, the detected
+  `auth_mode` (`apiKey`, `api_key`, `customGateway`, `gcp`, `vertex`,
+  `amazonBedrock`, `bedrock`, or `foundry`), and an explanatory warning.
+- Active API-key or cloud overrides bypass cached subscription snapshots and
+  skip OAuth usage requests. Credential values and `apiKeyHelper` commands are
+  never read into reports or executed.
+- Terminal panels report the active non-subscription mode instead of a missing
+  login error, while local token reports and API cost estimates track usage.
+
 ## References
 
 - [Codex App Server](https://learn.chatgpt.com/docs/app-server)

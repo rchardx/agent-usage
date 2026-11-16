@@ -178,5 +178,67 @@ def test_default_report_lists_days_but_json_keeps_provider_totals(paths):
     assert [group["group"] for group in tokens["groups"]] == ["claude"]
 
 
+def test_api_key_override_supersedes_cached_subscription_snapshot_online_and_offline(
+    paths, monkeypatch
+):
+    (paths.claude / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "old-sub-token"}})
+    )
+    cached_sub = AccountReport(
+        "claude",
+        "cache",
+        observed_at=datetime.now(UTC).isoformat(),
+        plan="pro",
+        auth_mode="claude.ai",
+        windows=[QuotaWindow("five_hour", "five_hour", 42, None, 300)],
+    ).to_dict()
+    save_snapshot(snapshot_path(paths, "claude"), cached_sub)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-active-key-sentinel")
+
+    for extra in ([], ["--offline"]):
+        json_res = runner.invoke(
+            app, [*options(paths), "--provider", "claude", "--no-cost", *extra, "--json"]
+        )
+        assert json_res.exit_code == 0, json_res.output
+        account = json.loads(json_res.output)["quota"]["accounts"][0]
+        assert account["status"] == "unavailable"
+        assert account["auth_mode"] == "api_key"
+        assert account["windows"] == []
+        assert account["error"] is None
+        assert "test-active-key-sentinel" not in json_res.output
+
+    term_res = runner.invoke(app, [*options(paths), "--provider", "claude", "--no-cost"])
+    assert term_res.exit_code == 0, term_res.output
+    assert "CLAUDE  ·  API key" in term_res.output
+    assert "API key mode · subscription allowances not applicable" in term_res.output
+    assert "42%" not in term_res.output
+
+
+def test_doctor_reports_non_subscription_auth_without_exposing_secrets(paths, monkeypatch):
+    monkeypatch.setattr("agent_usage.cli.shutil.which", lambda _: None)
+    codex_key_field = "OPENAI" + "_API_KEY"
+    (paths.codex / "auth.json").write_text(json.dumps({codex_key_field: "test-codex-sentinel"}))
+    (paths.claude / "settings.json").write_text(
+        json.dumps(
+            {
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "test-claude-sentinel",
+                    "ANTHROPIC_BASE_URL": "https://gateway.example.test",
+                }
+            }
+        )
+    )
+    result = runner.invoke(app, [*options(paths), "doctor", "--json"])
+    assert result.exit_code == 0, result.output
+    doctor = json.loads(result.output)["doctor"]
+    assert doctor["auth"] == {
+        "codex": {"auth_mode": "apiKey", "source": "codex-auth-file"},
+        "claude": {"auth_mode": "customGateway", "source": "claude-settings"},
+    }
+    assert doctor["claude_credentials_file_present"] is False
+    assert "test-codex-sentinel" not in result.output
+    assert "test-claude-sentinel" not in result.output
+
+
 def recent():
     return (datetime.now(UTC) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")

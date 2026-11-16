@@ -11,7 +11,15 @@ from .models import AccountReport, ProbeError, utc_now
 from .parsers import METRICS
 from .paths import Paths
 from .pricing import Pricing, cost_summary, resolve_catalog
-from .providers import fetch_claude, fetch_codex
+from .providers import (
+    claude_non_subscription_mode,
+    claude_override_mode,
+    codex_config_override,
+    codex_non_subscription_mode,
+    fetch_claude,
+    fetch_codex,
+    non_subscription_account,
+)
 
 # pi/omp are multi-provider harnesses, not subscription accounts; they have no
 # account quota concept and contribute local token history only.
@@ -44,19 +52,39 @@ def read_snapshot(path: Path) -> dict | None:
         return None
 
 
+def _non_subscription_override(paths: Paths, provider: str) -> tuple[str, str] | None:
+    if provider == "codex":
+        return codex_config_override(paths.codex)
+    return claude_override_mode(paths.claude)
+
+
+def _local_non_subscription(paths: Paths, provider: str) -> AccountReport | None:
+    found = (
+        codex_non_subscription_mode(paths.codex)
+        if provider == "codex"
+        else claude_non_subscription_mode(paths.claude)
+    )
+    return non_subscription_account(provider, found[1], found[0]) if found is not None else None
+
+
 def account_report(
     paths: Paths, provider: str, *, refresh: bool, offline: bool, timeout: float
 ) -> dict:
     cache_path = snapshot_path(paths, provider)
     home = paths.codex if provider == "codex" else paths.claude
     credentials = home / ("auth.json" if provider == "codex" else ".credentials.json")
-    # Without a file identity we cannot safely bind a cache to an OS-keychain account.
-    cacheable = credentials.is_file()
+    override = _non_subscription_override(paths, provider)
+    # Without a file identity we cannot safely bind a cache to an OS-keychain account;
+    # an active API-key/gateway override also supersedes any cached subscription snapshot.
+    cacheable = credentials.is_file() and override is None
     cached = read_snapshot(cache_path) if cacheable else None
     if cached and (offline or (not refresh and cached["age_seconds"] < 120)):
         cached["status"] = "stale" if cached["age_seconds"] >= 120 else "cached"
         return cached
     if offline:
+        local = _local_non_subscription(paths, provider)
+        if local is not None:
+            return {**local.to_dict(), "age_seconds": 0}
         return AccountReport(
             provider, "local-cache", status="unavailable", error="No matching cached snapshot."
         ).to_dict()

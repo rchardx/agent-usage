@@ -5,10 +5,24 @@ import pytest
 from agent_usage.paths import Paths
 from agent_usage.pricing import Pricing
 
+AUTH_ENV_VARS = (
+    "CODEX_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+
 
 @pytest.fixture(autouse=True)
 def offline_cli_prices(monkeypatch):
     """CLI tests never need the public pricing service; pricing I/O has its own tests."""
+    for name in AUTH_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         "agent_usage.cli.load_pricing", lambda *args, **kwargs: Pricing({}, "unavailable")
     )

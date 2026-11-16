@@ -17,6 +17,7 @@ from .cache import CacheError, cache_error_message
 from .index import Index, rebuild_index
 from .paths import Paths
 from .pricing import load_pricing
+from .providers import claude_auth_inspection, codex_auth_inspection
 from .render import render_quotas, render_tokens
 from .reports import ACCOUNT_PROVIDERS, envelope, period, quotas, summarize
 
@@ -264,6 +265,8 @@ def doctor(
             except (OSError, subprocess.TimeoutExpired):
                 version = "unavailable"
         versions[provider] = {"executable": executable, "version": version}
+    codex_mode, codex_source = codex_auth_inspection(settings.paths.codex)
+    claude_mode, claude_source = claude_auth_inspection(settings.paths.claude)
     result = envelope(
         doctor={
             "version": __version__,
@@ -274,6 +277,10 @@ def doctor(
             "timezone": str(settings.zone),
             "providers": versions,
             "coverage": coverage,
+            "auth": {
+                "codex": {"auth_mode": codex_mode, "source": codex_source},
+                "claude": {"auth_mode": claude_mode, "source": claude_source},
+            },
             "claude_credentials_file_present": (
                 settings.paths.claude / ".credentials.json"
             ).is_file(),

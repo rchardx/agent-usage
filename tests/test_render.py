@@ -8,12 +8,15 @@ import pytest
 from rich.console import Console
 from test_pricing import catalog, event
 
+from agent_usage.models import AccountReport
+from agent_usage.providers import non_subscription_account
 from agent_usage.render import (
     cache_hit_text,
     compact_number,
     cost_text,
     metric_text,
     numeric_cell,
+    render_quotas,
     render_tokens,
     unpriced_reason_text,
 )
@@ -261,3 +264,37 @@ def test_rendering_does_not_change_exact_json_values(detail):
     assert report == before
     assert report["totals"]["metrics"]["total_tokens"]["tokens"] == 3_300_000
     assert report["totals"]["estimated_cost"]["known_amount"] == "3.940000"
+
+
+@pytest.mark.parametrize(
+    ("provider", "auth_mode", "expected_label"),
+    [
+        ("codex", "apiKey", "API key"),
+        ("codex", "customGateway", "Custom gateway"),
+        ("claude", "api_key", "API key"),
+        ("claude", "vertex", "Google Cloud Vertex AI"),
+        ("claude", "bedrock", "Amazon Bedrock"),
+    ],
+)
+@pytest.mark.parametrize("width", [80, 160])
+def test_non_subscription_account_panel_avoids_login_error_noise(
+    provider, auth_mode, expected_label, width
+):
+    account = {**non_subscription_account(provider, "test", auth_mode).to_dict(), "age_seconds": 0}
+    other = {
+        **AccountReport(
+            "claude" if provider == "codex" else "codex",
+            "test",
+            status="unavailable",
+            error="Not logged in.",
+        ).to_dict(),
+    }
+    stream = io.StringIO()
+    render_quotas(
+        {"accounts": [account, other]}, Console(file=stream, width=width, color_system=None), UTC
+    )
+    text = stream.getvalue()
+    assert f"{provider.upper()}  ·  {expected_label}" in text
+    assert f"{expected_label} mode · subscription allowances not applicable" in text
+    assert "Use local token reports and API cost estimates" in text
+    assert max(map(len, text.splitlines())) <= width
