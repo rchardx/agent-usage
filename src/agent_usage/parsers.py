@@ -15,7 +15,29 @@ METRICS = (
     "cache_write_5m_tokens",
     "cache_write_1h_tokens",
 )
-PARSER_VERSION = 3
+PARSER_VERSION = 4
+
+
+def clean_model(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "unknown"
+    name = value.strip()
+    if name.startswith("models/") and len(name) > len("models/"):
+        name = name.removeprefix("models/")
+    return name or "unknown"
+
+
+def namespace_model(model: Any, upstream: Any, *, default_upstream: str | None = None) -> str:
+    cleaned = clean_model(model)
+    if cleaned == "unknown":
+        return "unknown"
+    if isinstance(upstream, str) and upstream.strip():
+        prefix = upstream.strip()
+        if default_upstream and prefix == default_upstream:
+            return cleaned
+        if cleaned != prefix and not cleaned.startswith(f"{prefix}/"):
+            return f"{prefix}/{cleaned}"
+    return cleaned
 
 
 def count(value: Any) -> int | None:
@@ -45,6 +67,7 @@ def parse_codex(
             session_meta_seen=True,
             session=payload.get("id") or payload.get("session_id") or fallback_session,
             project=payload.get("cwd", "unknown"),
+            model_provider=payload.get("model_provider"),
             forked=bool(payload.get("forked_from_id")),
             started_at=iso_time(payload.get("timestamp")),
         )
@@ -52,6 +75,8 @@ def parse_codex(
     if row.get("type") == "turn_context":
         state["model"] = payload.get("model", "unknown")
         state["project"] = payload.get("cwd", state.get("project", "unknown"))
+        if payload.get("model_provider"):
+            state["model_provider"] = payload["model_provider"]
         return None, None
     if payload.get("type") != "token_count" or not payload.get("info"):
         return None, None
@@ -107,24 +132,28 @@ def parse_codex(
     if input_tokens + output_tokens == 0:
         return None, warning
     session = state.get("session", fallback_session)
+    single_request = all(
+        usage.get(key) == (info.get("last_token_usage") or {}).get(key)
+        for key in ("input_tokens", "output_tokens")
+    )
     event = UsageEvent(
         provider="codex",
         event_id=digest([session, timestamp, total]),
         session=session,
         timestamp=timestamp,
-        model=state.get("model", "unknown"),
+        model=namespace_model(
+            state.get("model", "unknown"),
+            state.get("model_provider"),
+            default_upstream="openai",
+        ),
         project=state.get("project", "unknown"),
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=usage.get("cached_input_tokens"),
         cache_write_tokens=usage.get("cache_write_input_tokens"),
         reasoning_tokens=usage.get("reasoning_output_tokens"),
-        request_input_tokens=input_tokens
-        if all(
-            usage.get(key) == (info.get("last_token_usage") or {}).get(key)
-            for key in ("input_tokens", "output_tokens")
-        )
-        else None,
+        request_input_tokens=input_tokens if single_request else None,
+        multi_request=not single_request,
     )
     validate(event)
     return event, warning
@@ -145,9 +174,10 @@ def parse_claude(
     output = count(usage.get("output_tokens"))
     read = count(usage.get("cache_read_input_tokens"))
     write = count(usage.get("cache_creation_input_tokens"))
-    if fresh is None or output is None or read is None or write is None:
+    if fresh is None or output is None:
         return None, "claude_incomplete_usage"
-    if fresh + output + read + write == 0:
+    total_input = fresh + (read or 0) + (write or 0)
+    if total_input + output == 0:
         return None, None
     timestamp = iso_time(row.get("timestamp"))
     if timestamp is None:
@@ -158,22 +188,26 @@ def parse_claude(
         return None, "claude_missing_request_identity"
     details = usage.get("output_tokens_details") or {}
     creation = usage.get("cache_creation") or {}
+    iterated = bool(usage.get("iterations"))
     event = UsageEvent(
         provider="claude",
         # Same message is often repeated for text, thinking, and tool content blocks.
         event_id=digest([request_id, message_id]),
         session=session,
         timestamp=timestamp,
-        model=message.get("model") or "unknown",
+        model=clean_model(message.get("model")),
         project=row.get("cwd") or "unknown",
-        input_tokens=fresh + read + write,
+        input_tokens=total_input,
         output_tokens=output,
         cache_read_tokens=read,
         cache_write_tokens=write,
         reasoning_tokens=count(details.get("thinking_tokens")),
         cache_write_5m_tokens=count(creation.get("ephemeral_5m_input_tokens")),
         cache_write_1h_tokens=count(creation.get("ephemeral_1h_input_tokens")),
-        request_input_tokens=fresh + read + write if not usage.get("iterations") else None,
+        request_input_tokens=total_input
+        if (read is not None and write is not None and not iterated)
+        else None,
+        multi_request=iterated,
     )
     validate(event)
     return event, None
@@ -194,8 +228,11 @@ def parse_pi_style(
         )
         return None, None
     if row.get("type") == "model_change":
-        # pi reports provider/modelId; omp reports model.
-        state["model"] = row.get("model") or row.get("modelId") or state.get("model")
+        # pi reports provider + modelId; omp reports model.
+        changed = row.get("model") or row.get("modelId")
+        if changed:
+            state["model"] = changed
+            state["model_provider"] = row.get("provider")
         return None, None
     message = row.get("message")
     if row.get("type") != "message" or not isinstance(message, dict):
@@ -220,11 +257,14 @@ def parse_pi_style(
     identity = message.get("responseId") or row.get("id") or message.get("id")
     if not identity:
         return None, f"{provider}_missing_request_identity"
-    model = message.get("responseModel") or message.get("model") or state.get("model") or "unknown"
-    upstream = message.get("provider")
-    if upstream and "/" not in model:
-        # Namespace the actual model with the upstream that served it (never guessed aliases).
-        model = f"{upstream}/{model}"
+    if message.get("responseModel") or message.get("model"):
+        raw_model = message.get("responseModel") or message.get("model")
+        upstream = message.get("provider")
+    else:
+        raw_model = state.get("model")
+        upstream = message.get("provider") or state.get("model_provider")
+    # Preserve the serving upstream even when a gateway model ID itself contains "/".
+    model = namespace_model(raw_model, upstream)
     event = UsageEvent(
         provider=provider,
         event_id=digest([provider, state.get("session", fallback_session), identity]),
@@ -256,6 +296,8 @@ def parse_omp(
 def validate(event: UsageEvent):
     if event.cache_read_tokens is not None and event.cache_read_tokens > event.input_tokens:
         raise ValueError("Cache reads exceed total input")
+    if event.cache_write_tokens is not None and event.cache_write_tokens > event.input_tokens:
+        raise ValueError("Cache writes exceed total input")
     if event.cache_read_tokens is not None and event.cache_write_tokens is not None:
         if event.cache_read_tokens + event.cache_write_tokens > event.input_tokens:
             raise ValueError("Cache components exceed total input")

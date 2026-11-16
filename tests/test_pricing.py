@@ -328,3 +328,238 @@ def test_malformed_cached_catalog_is_unavailable_offline(paths, models):
         {"source": SOURCE, "fetched_at": datetime.now(UTC).isoformat(), "models": models},
     )
     assert load_pricing(paths.cache, offline=True).status == "unavailable"
+
+
+def gemini_catalog():
+    pro_cost = {
+        "input": 1.25,
+        "output": 10,
+        "cache_read": 0.125,
+        "tiers": [
+            {
+                "input": 2.5,
+                "output": 15,
+                "cache_read": 0.25,
+                "tier": {"type": "context", "size": 200000},
+            }
+        ],
+    }
+    flash_cost = {"input": 0.3, "output": 2.5, "cache_read": 0.03}
+    return Pricing(
+        {
+            "google": {
+                "gemini-2.5-pro": {"cost": pro_cost},
+                "gemini-2.5-flash": {"cost": flash_cost},
+            },
+            "google-vertex": {
+                "gemini-2.5-pro": {"cost": pro_cost},
+            },
+            "openrouter": {
+                "google/gemini-2.5-pro": {"cost": {"input": 1.5, "output": 12, "cache_read": 0.15}},
+            },
+            "vercel": {
+                "google/gemini-2.5-flash": {
+                    "cost": {"input": 0.4, "output": 3, "cache_read": 0.04}
+                },
+            },
+            "deepseek": {
+                "deepseek-chat": {
+                    "cost": {"input": 0.27, "output": 1.1, "cache_read": 0.07, "cache_write": 0.27}
+                }
+            },
+            "mistral": {
+                "codestral-latest": {"cost": {"input": 0.3, "output": 0.9, "cache_read": 0.03}}
+            },
+            "alibaba": {"qwen3-coder-plus": {"cost": {"input": 1, "output": 5, "cache_read": 0.1}}},
+            "google-vertex-anthropic": {
+                "claude-sonnet-4-5@20250929": {
+                    "cost": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
+                }
+            },
+            "amazon-bedrock": {
+                "us.anthropic.claude-opus-4-1-20250805-v1:0": {
+                    "cost": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75}
+                }
+            },
+        },
+        "live",
+        "2026-10-05T00:00:00+00:00",
+    )
+
+
+def test_gemini_implicit_cache_thinking_and_200k_tiers_across_all_four_harnesses():
+    pricing = gemini_catalog()
+    # 100k input (40k cached read, 0 write), 20k output (including 8k thinking tokens) <= 200k tier
+    base_row = event(
+        input_tokens=100_000,
+        request_input_tokens=100_000,
+        cache_read_tokens=40_000,
+        cache_write_tokens=0,
+        output_tokens=20_000,
+        reasoning_tokens=8_000,
+    )
+    # 60k * 1.25/M ($0.075) + 40k * 0.125/M ($0.005) + 20k * 10/M ($0.20) = $0.28
+    for agent, model, expected_channel in (
+        ("pi", "google/gemini-2.5-pro", "google"),
+        ("omp", "google-vertex/gemini-2.5-pro", "google-vertex"),
+        ("codex", "google/gemini-2.5-pro", "google"),
+        ("codex", "gcp/gemini-2.5-pro", "google-vertex"),
+        ("codex", "gemini-2.5-pro", "google"),
+        ("claude", "gemini-2.5-pro", "google"),
+        ("claude", "google/gemini-2.5-pro", "google"),
+    ):
+        est = pricing.estimate(base_row | {"provider": agent, "model": model})
+        assert est["pricing_provider"] == expected_channel, (agent, model)
+        assert est["amount"] == Decimal("0.28"), (agent, model)
+
+    # > 200k single-request context triggers the 200k tier:
+    # 200k fresh * 2.5/M ($0.50) + 100k read * 0.25/M ($0.025) + 20k out * 15/M ($0.30) = $0.825
+    high_tier = base_row | {
+        "provider": "pi",
+        "model": "google/gemini-2.5-pro",
+        "input_tokens": 300_000,
+        "request_input_tokens": 300_000,
+        "cache_read_tokens": 100_000,
+    }
+    assert pricing.estimate(high_tier)["amount"] == Decimal("0.825")
+
+    # OpenRouter and Vercel AI Gateway use their own catalog entries, not direct Google rates.
+    or_est = pricing.estimate(
+        base_row | {"provider": "pi", "model": "openrouter/google/gemini-2.5-pro"}
+    )
+    assert or_est["pricing_provider"] == "openrouter"
+    assert or_est["model"] == "google/gemini-2.5-pro"
+    assert or_est["amount"] == Decimal("0.336")
+
+    vercel_est = pricing.estimate(
+        base_row | {"provider": "omp", "model": "vercel-ai-gateway/google/gemini-2.5-flash"}
+    )
+    assert vercel_est["pricing_provider"] == "vercel"
+    assert vercel_est["model"] == "google/gemini-2.5-flash"
+    assert vercel_est["amount"] == Decimal("0.0856")
+
+
+def test_models_without_cache_write_rate_handle_omitted_cache_write_honestly():
+    pricing = gemini_catalog()
+    # Models with no separate cache_write rate bill all non-read input at the input rate.
+    omitted_write = event(
+        provider="codex",
+        model="google/gemini-2.5-flash",
+        input_tokens=1_000_000,
+        request_input_tokens=1_000_000,
+        cache_read_tokens=600_000,
+        cache_write_tokens=None,
+        output_tokens=100_000,
+    )
+    est = pricing.estimate(omitted_write)
+    # 400k * 0.3/M ($0.12) + 600k * 0.03/M ($0.018) + 100k * 2.5/M ($0.25) = $0.388
+    assert est["amount"] == Decimal("0.388")
+    assert omitted_write["cache_write_tokens"] is None
+
+    # Positive cache_write_tokens when catalog has no cache_write rate stays unknown.
+    positive_write = omitted_write | {"cache_write_tokens": 10_000}
+    assert pricing.estimate(positive_write)["reason"] == "missing_cache_write_price"
+
+    # Models that DO have a cache_write rate still require cache_write_tokens.
+    with_write_rate = omitted_write | {"model": "deepseek/deepseek-chat"}
+    assert pricing.estimate(with_write_rate)["reason"] == "unknown_cache_usage"
+
+    # A >200k tier missing cache_write when base cost defines cache_write must stay unknown.
+    tiered_incomplete = Pricing(
+        {
+            "openai": {
+                "tiered-model": {
+                    "cost": {
+                        "input": 3,
+                        "output": 15,
+                        "cache_read": 0.3,
+                        "cache_write": 3.75,
+                        "tiers": [
+                            {
+                                "input": 6,
+                                "output": 22.5,
+                                "cache_read": 0.6,
+                                "tier": {"type": "context", "size": 200_000},
+                            }
+                        ],
+                    }
+                }
+            }
+        },
+        "live",
+        "2026-10-05T00:00:00+00:00",
+    )
+    high_tier_unknown_write = event(
+        provider="codex",
+        model="tiered-model",
+        input_tokens=300_000,
+        request_input_tokens=300_000,
+        cache_read_tokens=100_000,
+        cache_write_tokens=None,
+        output_tokens=5_000,
+    )
+    assert tiered_incomplete.estimate(high_tier_unknown_write)["reason"] == "unknown_cache_usage"
+
+    # Claude events reconstruct total input from fresh + cache; missing cache_write stays unknown.
+    claude_omitted_write = omitted_write | {"provider": "claude", "model": "gemini-2.5-flash"}
+    assert pricing.estimate(claude_omitted_write)["reason"] == "unknown_cache_usage"
+
+
+def test_two_level_gateways_first_party_keys_and_non_anthropic_claude_proxies():
+    pricing = gemini_catalog()
+    assert (
+        pricing.estimate(
+            event(
+                provider="pi",
+                model="custom-proxy/google/gemini-2.5-flash",
+                cache_write_tokens=0,
+            )
+        )["pricing_provider"]
+        == "google"
+    )
+    assert (
+        pricing.estimate(
+            event(provider="omp", model="custom-proxy/codestral-latest", cache_write_tokens=0)
+        )["pricing_provider"]
+        == "mistral"
+    )
+    assert (
+        pricing.estimate(
+            event(provider="pi", model="custom-proxy/qwen3-coder-plus", cache_write_tokens=0)
+        )["pricing_provider"]
+        == "alibaba"
+    )
+
+    # Explicit known sub-prefixes never fall back across channels.
+    assert (
+        pricing.estimate(
+            event(provider="pi", model="custom-proxy/google/deepseek-chat", cache_write_tokens=0)
+        )["reason"]
+        == "model_not_priced"
+    )
+
+    # Non-Anthropic model proxied through Claude Code uses catalog cache_write without 5m/1h TTLs.
+    proxied_claude = event(
+        provider="claude",
+        model="deepseek/deepseek-chat",
+        cache_write_5m_tokens=None,
+        cache_write_1h_tokens=None,
+    )
+    est = pricing.estimate(proxied_claude)
+    assert est["pricing_provider"] == "deepseek"
+    assert est["amount"] is not None
+
+    # Official Vertex and Bedrock Claude model IDs resolve on Claude Code and enforce TTL rules.
+    for cloud_model, expected_cloud in (
+        ("claude-sonnet-4-5@20250929", "google-vertex-anthropic"),
+        ("us.anthropic.claude-opus-4-1-20250805-v1:0", "amazon-bedrock"),
+    ):
+        cloud_row = event(
+            provider="claude",
+            model=cloud_model,
+            cache_write_5m_tokens=40_000,
+            cache_write_1h_tokens=60_000,
+        )
+        cloud_est = pricing.estimate(cloud_row)
+        assert cloud_est["pricing_provider"] == expected_cloud
+        assert cloud_est["amount"] is not None
