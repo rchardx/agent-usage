@@ -13,8 +13,9 @@ execution constraints, project boundaries and validation requirements.
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). The repository's
 `.python-version` selects Python 3.14 for local development without pinning a patch
 release. This does not raise the package's `requires-python >=3.11` requirement;
-Ruff and mypy retain their Python 3.11 compatibility targets. CI explicitly selects
-Python 3.11 or 3.14 rather than relying on the local default.
+Ruff and mypy retain their Python 3.11 compatibility targets. CI reads the
+minimum from `pyproject.toml` and the development version from `.python-version`,
+and tests both.
 
 ```bash
 uv sync --locked --dev
@@ -64,6 +65,22 @@ Schema validation dependencies are development-only. JSON changes must update
 examples as appropriate; follow [JSON compatibility rules](docs/json-interface.md).
 Cache recovery tests must use isolated cache directories and preserve source
 logs and unrelated snapshots, including on simulated failure.
+
+### Nightly prerelease
+
+The Nightly workflow checks `main` at 00:00 UTC. It skips an already published
+build of the same commit. To rebuild or repair a partial upload, run
+`gh workflow run nightly.yml --ref main -f force=true`. Before modifying the
+release, the publish job rechecks `main`. A rerun keeps its original commit and
+run number; dispatch a new run to build the latest `main`. For the same commit,
+a higher **published** run number supersedes any older run, regardless of start
+order. Publication uploads the new distributions, switches the release notes,
+then updates the tag and cleans up older assets. If either final step fails,
+retry the failed job: it reuses the advertised assets without overwriting them.
+Install the wheel named by the published version, not every attached wheel.
+The next scheduled run repairs an interrupted publication.
+The rolling `nightly` release is for testing; it does not
+publish to PyPI or change the base version in `pyproject.toml`.
 
 ### Optional local hooks
 

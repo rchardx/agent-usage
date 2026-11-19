@@ -21,6 +21,20 @@ uv tool install git+https://github.com/rchardx/agent-usage
 This installs the current `main` branch, not a versioned release. Install from
 GitHub: the PyPI package named `agent-usage` belongs to a different project.
 
+To install the tested [nightly prerelease](https://github.com/rchardx/agent-usage/releases/tag/nightly)
+with the [GitHub CLI](https://cli.github.com/), run these commands in an empty directory:
+
+```bash
+repo=rchardx/agent-usage
+version=$(gh release view nightly -R "$repo" --json body \
+  --jq '.body | capture("^Rolling development build (?<version>[0-9a-z.+]+) from ").version')
+wheel="agent_usage-$version-py3-none-any.whl"
+gh release download nightly -R "$repo" -p "$wheel" && uv tool install --force "./$wheel"
+agent-usage --version
+```
+
+If the nightly changes between lookup and download, repeat the commands in a fresh directory.
+
 If the command is not found, ensure `uv tool dir --bin` is on `PATH`;
 `uv tool update-shell` can configure it for a new shell session.
 

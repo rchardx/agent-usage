@@ -13,21 +13,49 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      minimum: ${{ steps.versions.outputs.minimum }}
+      development: ${{ steps.versions.outputs.development }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: versions
+        run: python3 scripts/python_versions.py >> "$GITHUB_OUTPUT"
+
   check:
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          python-version: "3.11"
+          python-version: ${{ needs.versions.outputs.minimum }}
           enable-cache: true
       - run: uv sync --locked --dev
+      - name: Lint GitHub Actions workflows
+        env:
+          VERSION: "1.7.12"
+          SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8" # pragma: allowlist secret -- public release checksum
+        run: |
+          archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+          (
+            cd "$RUNNER_TEMP"
+            curl --fail --silent --show-error --location \
+              "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/$archive" \
+              --output "$archive"
+            printf '%s  %s\n' "$SHA256" "$archive" | sha256sum --check
+            tar -xzf "$archive" actionlint
+          )
+          "$RUNNER_TEMP/actionlint"
       - run: uv run --locked pre-commit run --all-files --show-diff-on-failure
       - run: git diff --exit-code
       - run: git diff --check
 
   test:
+    needs: versions
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -35,13 +63,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python: "3.11"
+            python: ${{ needs.versions.outputs.minimum }}
           - os: ubuntu-latest
-            python: "3.14"
+            python: ${{ needs.versions.outputs.development }}
           - os: macos-latest
-            python: "3.14"
+            python: ${{ needs.versions.outputs.development }}
           - os: windows-latest
-            python: "3.14"
+            python: ${{ needs.versions.outputs.development }}
     env:
       PYTHONUTF8: "1"
     steps:
@@ -54,13 +82,14 @@ jobs:
       - run: uv run --locked pytest -q
 
   package:
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          python-version: "3.11"
+          python-version: ${{ needs.versions.outputs.minimum }}
       - run: uv sync --locked --dev
       - run: uv build
       - run: uv run --locked twine check --strict dist/*
@@ -107,7 +136,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [check, test, package, secrets]
+    needs: [versions, check, test, package, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
