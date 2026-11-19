@@ -1,0 +1,197 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Replace a complete nightly even if main has not changed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check the triggering revision and inspect the rolling prerelease
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || false }}
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          api="repos/$GITHUB_REPOSITORY"
+          sha=$GITHUB_SHA
+          head=$(gh api "$api/git/ref/heads/main" --jq '.object.sha')
+          [[ $head =~ ^[0-9a-f]{40}$ ]]
+          if [[ $head != "$sha" ]]; then
+            echo "Skipping superseded event for $sha; dispatch a new run to build $head."
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Listing returns an empty result for a missing tag/release, not for API failures.
+          tag=$(gh api "$api/git/matching-refs/tags/nightly" --jq '.[] | select(.ref=="refs/tags/nightly") | .object | if .type=="commit" then .sha else error("nightly must be lightweight") end')
+          gh api --paginate "$api/releases?per_page=100" --jq '.[] | select(.tag_name=="nightly")' > release.json
+          release=$(jq -r '.id' release.json)
+          build=true
+          if [[ $FORCE != true && $sha == "$tag" && -n $release ]]; then
+            complete=$(python3 scripts/nightly_complete.py "$sha" "$GITHUB_REPOSITORY" < release.json)
+            if [[ $complete == true ]]; then build=false; fi
+          fi
+          printf 'sha=%s\nbuild=%s\n' "$sha" "$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      minimum: ${{ steps.versions.outputs.minimum }}
+      development: ${{ steps.versions.outputs.development }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - id: versions
+        run: python3 scripts/python_versions.py >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ steps.versions.outputs.minimum }}
+      - id: pack
+        name: Build and check the nightly wheel and sdist
+        shell: bash
+        run: |
+          uv sync --locked --dev
+          sha=$(git rev-parse HEAD)
+          version="$(uv version --short).dev${GITHUB_RUN_NUMBER}+g${sha:0:12}"
+          uv version --no-sync "$version"
+          uv build
+          .venv/bin/twine check --strict dist/*
+          test -s "dist/agent_usage-$version-py3-none-any.whl"
+          unpacked=$(mktemp -d)
+          tar -xzf "dist/agent_usage-$version.tar.gz" -C "$unpacked"
+          (cd "$unpacked/agent_usage-$version" && uv lock --check)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: nightly-dist
+          path: dist/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 3
+
+  verify:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python:
+          - ${{ needs.build.outputs.minimum }}
+          - ${{ needs.build.outputs.development }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: nightly-dist
+          path: ${{ runner.temp }}/dist
+      - run: uv run --locked pytest -q
+      - name: Smoke-test the installed wheel outside the checkout
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          PYTHON: ${{ matrix.python }}
+        run: |
+          cd "$(mktemp -d)"
+          uv venv --python "$PYTHON" .venv
+          . .venv/bin/activate
+          uv pip install "$RUNNER_TEMP/dist/agent_usage-$VERSION-py3-none-any.whl" \
+            'jsonschema>=4.23,<5' 'rfc3339-validator>=0.1.4,<1'
+          test "$(agent-usage --version)" = "$VERSION"
+          agent-usage --help > /dev/null
+          agent-usage --codex-home "$PWD/codex" --claude-home "$PWD/claude" \
+            --pi-home "$PWD/pi" --omp-home "$PWD/omp" --cache-dir "$PWD/cache" \
+            --offline --no-cost tokens --all --json > report.json
+          agent-usage schema | python -m json.tool > schema.json
+          python "$GITHUB_WORKSPACE/scripts/validate_report.py" report.json
+
+  publish:
+    needs: [plan, build, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: nightly-dist
+          path: dist
+      - name: Upload and publish nightly before removing stale assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          api="repos/$GH_REPO"
+          # Re-running failed jobs can reuse the SHA from an earlier plan.
+          head=$(gh api "$api/git/ref/heads/main" --jq '.object.sha')
+          [[ $head =~ ^[0-9a-f]{40}$ ]]
+          if [[ $head != "$SHA" ]]; then
+            echo "Skipping superseded build: main is $head, not $SHA."
+            exit 0
+          fi
+          wheel="agent_usage-$VERSION-py3-none-any.whl"
+          sdist="agent_usage-$VERSION.tar.gz"
+          test -s "dist/$wheel"
+          test -s "dist/$sdist"
+          # Recheck with write permission: a previous attempt may have left a draft.
+          gh api --paginate "$api/releases?per_page=100" --jq '.[] | select(.tag_name=="nightly")' > release.json
+          if [[ -s release.json ]]; then
+            decision=$(python3 scripts/nightly_complete.py "$SHA" "$GH_REPO" "$VERSION" < release.json)
+          else
+            gh release create nightly --draft --prerelease --latest=false --target "$SHA" --title Nightly --notes ''
+            decision=upload
+          fi
+          case "$decision" in
+            skip) echo 'A newer nightly is already published for this commit.'; exit 0 ;;
+            resume) echo 'Verified published assets; resuming tag and cleanup.' ;;
+            upload)
+              gh release upload nightly "dist/$wheel" "dist/$sdist" --clobber
+              gh release edit nightly --draft=false --prerelease --latest=false --target "$SHA" --title Nightly \
+                --notes "Rolling development build $VERSION from $GH_REPO@$SHA. Verified on the minimum and development Python versions. Build: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+              ;;
+            *) exit 1 ;;
+          esac
+          gh api -X PATCH "$api/git/refs/tags/nightly" -f sha="$SHA" -F force=true --silent
+          gh release view nightly --json assets | jq -r --arg w "$wheel" --arg s "$sdist" \
+            '.assets[] | select(.name!=$w and .name!=$s) | .apiUrl' > stale
+          while IFS= read -r asset; do gh api -X DELETE "$asset"; done < stale

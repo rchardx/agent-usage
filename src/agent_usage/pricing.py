@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from . import USER_AGENT
 from .cache import write_json
 from .models import utc_now
 
@@ -317,7 +318,7 @@ def load_pricing(cache: Path, *, offline=False, refresh=False, timeout=10) -> Pr
     if offline:
         return Pricing({}, "unavailable", error="No cached models.dev prices; run online once.")
     request = urllib.request.Request(
-        SOURCE, headers={"User-Agent": "agent-usage/0.1.0", "Accept": "application/json"}
+        SOURCE, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

@@ -1,13 +1,13 @@
 """CLI contracts that must survive parser-library upgrades."""
 
 import json
+from importlib.metadata import version
 
 import pytest
 from rich.text import Text
 from test_cli import options
 from typer.testing import CliRunner
 
-from agent_usage import __version__
 from agent_usage.cli import app
 from agent_usage.pricing import load_pricing
 
@@ -40,7 +40,7 @@ def test_eager_version_has_no_report_side_effects(paths, monkeypatch):
     forbid_reports(monkeypatch)
     result = runner.invoke(app, [*options(paths), "--version"])
     assert result.exit_code == 0, result.output
-    assert result.stdout.strip() == __version__
+    assert result.stdout.strip() == version("agent-usage")
     assert result.stderr == ""
     assert not paths.cache.exists()
 
@@ -179,6 +179,7 @@ def test_offline_json_is_clean_and_never_fetches(paths, monkeypatch, command, gl
     if "quota" in data:
         assert {a["status"] for a in data["quota"]["accounts"]} == {"unavailable"}
     if "doctor" in data:
+        assert data["doctor"]["version"] == version("agent-usage")
         assert data["doctor"]["timezone"] == "UTC"
 
 

@@ -3,6 +3,7 @@ import json
 import queue
 import time
 import urllib.error
+from importlib.metadata import version
 
 import pytest
 
@@ -89,6 +90,7 @@ def test_claude_request_stays_on_expected_origin_and_normalizes(paths, monkeypat
         def open(self, request, timeout):
             assert request.full_url == "https://api.anthropic.com/api/oauth/usage"
             assert request.get_method() == "GET"
+            assert request.get_header("User-agent") == f"agent-usage/{version('agent-usage')}"
             assert request.get_header("Authorization") == "Bearer secret-test-token"
             return io.BytesIO(b'{"five_hour":{"utilization":12,"resets_at":null}}')
 
@@ -168,6 +170,7 @@ def test_codex_rpc_non_subscription_modes_report_clean_unavailable(
         def call(self, method, params=None):
             called_methods.append(method)
             if method == "initialize":
+                assert params["clientInfo"]["version"] == version("agent-usage")
                 return {}
             if method == "account/read":
                 return {"account": {"type": account_type}, "requiresOpenaiAuth": True}

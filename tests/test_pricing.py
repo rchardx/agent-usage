@@ -3,6 +3,7 @@ import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from importlib.metadata import version
 
 import pytest
 
@@ -280,6 +281,7 @@ def test_price_fetch_caches_public_rates_and_offline_never_fetches(paths, monkey
     def fetch(request, timeout):
         calls.append(request)
         assert request.full_url == SOURCE
+        assert request.get_header("User-agent") == f"agent-usage/{version('agent-usage')}"
         assert request.get_header("Authorization") is None
         return io.BytesIO(json.dumps({"openai": {"models": catalog().models["openai"]}}).encode())
 

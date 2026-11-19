@@ -1,3 +1,6 @@
 """Codex and Claude Code usage reporting."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("agent-usage")
+USER_AGENT = f"agent-usage/{__version__}"

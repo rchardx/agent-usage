@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, TypeGuard
 
+from . import USER_AGENT, __version__
 from .allowances import CREDIT_LABELS, NON_SUBSCRIPTION_LABELS, WINDOW_LABELS
 from .models import (
     AccountReport,
@@ -280,7 +281,7 @@ def fetch_codex(home: Path, timeout: float = 10) -> AccountReport:
             rpc = CodexRPC(home, timeout)
             rpc.call(
                 "initialize",
-                {"clientInfo": {"name": "agent_usage", "version": "0.1.0"}},
+                {"clientInfo": {"name": "agent_usage", "version": __version__}},
             )
             rpc.send({"method": "initialized"})
             account = rpc.call("account/read", {"refreshToken": False})
@@ -487,7 +488,7 @@ def fetch_claude(home: Path, timeout: float = 10) -> AccountReport:
         headers={
             "Authorization": f"Bearer {token}",
             "anthropic-beta": "oauth-2025-04-20",
-            "User-Agent": "agent-usage/0.1.0",
+            "User-Agent": USER_AGENT,
             "Accept": "application/json",
         },
     )
