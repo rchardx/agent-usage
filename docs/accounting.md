@@ -108,7 +108,11 @@ IDs on `google` / `google-vertex`), without cross-matching arbitrary unprefixed
 IDs across unrelated channels.
 Known catalog prefixes never fall back to another channel; gateway-only aliases
 (such as Radius's `balanced`/`cheap` profiles) and ids with no exact match stay
-unpriced.
+unpriced. Antigravity models ending with a reasoning-effort suffix (`-extra-low`,
+`-low`, `-medium`, `-high`, `-xhigh`, `-max`, or `-thinking`) match their exact
+suffixed catalog entry first and fall back to the same channel's stripped base
+model only when the suffixed entry has no catalog price and the base model is
+priced; other providers never strip model suffixes.
 Prices are USD per million tokens. The catalog is cached for 24 hours;
 `--refresh` refreshes it, `--offline` uses cached prices without network access,
 and `--no-cost` skips pricing altogether. Failed refreshes retain a dated, visibly

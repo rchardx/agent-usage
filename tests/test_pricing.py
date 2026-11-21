@@ -565,3 +565,159 @@ def test_two_level_gateways_first_party_keys_and_non_anthropic_claude_proxies():
         cloud_est = pricing.estimate(cloud_row)
         assert cloud_est["pricing_provider"] == expected_cloud
         assert cloud_est["amount"] is not None
+
+
+def test_antigravity_effort_suffixes_prefer_exact_then_priced_base_without_affecting_other_agents():
+    pricing = Pricing(
+        {
+            "google": {
+                "gemini-3.8-flash": {"cost": {"input": 0.3, "output": 2.5, "cache_read": 0.03}},
+                "gemini-3.8-flash-xhigh": {
+                    "cost": {"input": 0.6, "output": 5.0, "cache_read": 0.06}
+                },
+                "gemini-3.5-flash": {"cost": {"input": 0.2, "output": 1.5, "cache_read": 0.02}},
+            },
+            "anthropic": {
+                "claude-sonnet-4-6": {
+                    "cost": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
+                }
+            },
+            "openai": {
+                "gpt-5.1-codex": {"cost": {"input": 1.25, "output": 10, "cache_read": 0.125}},
+                "o3-mini": {"cost": {"input": 1.1, "output": 4.4, "cache_read": 0.55}},
+            },
+        },
+        "live",
+        "2026-10-05T00:00:00+00:00",
+    )
+    sample = event(
+        provider="antigravity",
+        input_tokens=1_000_000,
+        request_input_tokens=1_000_000,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        output_tokens=100_000,
+        reasoning_tokens=20_000,
+    )
+
+    # 1. Exact suffixed entry takes precedence over base rates.
+    exact = pricing.estimate(sample | {"model": "gemini-3.8-flash-xhigh"})
+    assert exact["pricing_provider"] == "google"
+    assert exact["model"] == "gemini-3.8-flash-xhigh"
+    assert exact["amount"] == Decimal("1.1")
+
+    # 2. Absent suffixed variant on Antigravity falls back when stripped base is priced.
+    for suffix in ("high", "medium", "low", "thinking", "max"):
+        fallback = pricing.estimate(sample | {"model": f"gemini-3.8-flash-{suffix}"})
+        assert fallback["pricing_provider"] == "google"
+        assert fallback["model"] == "gemini-3.8-flash"
+        assert fallback["amount"] == Decimal("0.55")
+
+    assert pricing.estimate(sample | {"model": "gemini-3.5-flash-extra-low"})["amount"] == Decimal(
+        "0.35"
+    )
+    assert pricing.estimate(sample | {"model": "claude-sonnet-4-6-thinking"})["amount"] == Decimal(
+        "4.5"
+    )
+
+    # Report preserves the recorded suffixed model id while exposing the resolved base rate table.
+    report = summarize(
+        [sample | {"model": "gemini-3.8-flash-high"}],
+        None,
+        datetime(2026, 11, 1, tzinfo=UTC),
+        "model",
+        UTC,
+        {},
+        pricing,
+    )
+    assert [g["group"] for g in report["groups"]] == ["gemini-3.8-flash-high"]
+    assert report["pricing"]["models"][0]["model"] == "gemini-3.8-flash-high"
+    assert report["pricing"]["models"][0]["cost_per_million_usd"] == {
+        "input": 0.3,
+        "output": 2.5,
+        "cache_read": 0.03,
+    }
+
+    # 3. Unpriced base stays unpriced and retains the original suffixed model in diagnostics.
+    assert pricing.estimate(sample | {"model": "gemini-4-carbon-medium"}) == {
+        "amount": None,
+        "reason": "model_not_priced",
+        "model": "gemini-4-carbon-medium",
+    }
+
+    # 4. Non-Antigravity providers keep suffixed IDs exact and never strip -max / -high / -thinking.
+    for other_agent, other_model in (
+        ("codex", "gpt-5.1-codex-max"),
+        ("codex", "o3-mini-high"),
+        ("claude", "claude-sonnet-4-6-thinking"),
+        ("pi", "google/gemini-3.8-flash-high"),
+        ("omp", "openai/o3-mini-high"),
+    ):
+        other_res = pricing.estimate(sample | {"provider": other_agent, "model": other_model})
+        assert other_res["reason"] == "model_not_priced", (other_agent, other_model)
+
+
+def test_antigravity_suffix_fallback_handles_empty_cost_zero_rates_and_channel_boundaries():
+    pricing = Pricing(
+        {
+            "google": {
+                "gemini-2.5-pro": {"cost": {"input": 1.25, "output": 10}},
+                "gemini-2.5-pro-high": {"cost": {}},
+                "gemini-free-preview": {"cost": {"input": 0, "output": 0}},
+                "gemini-free-exp": {"cost": {"input": 1, "output": 5}},
+                "gemini-free-exp-low": {"cost": {"input": 0, "output": 0}},
+                "gemini-vertex-only": {"cost": {"input": 1.25, "output": 10}},
+            },
+            "google-vertex": {
+                "gemini-2.5-pro": {"cost": {"input": 2.0, "output": 12.0}},
+                "gemini-2.5-pro-medium": {"cost": {}},
+                "gemini-vertex-only-high": {"cost": {}},
+            },
+            "anthropic": {
+                "claude-sonnet-4-6": {
+                    "cost": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
+                }
+            },
+            "google-vertex-anthropic": {
+                "claude-sonnet-4-6-max": {"cost": {}},
+            },
+        },
+        "live",
+        "2026-10-05T00:00:00+00:00",
+    )
+    sample = event(
+        provider="antigravity",
+        input_tokens=1_000_000,
+        request_input_tokens=1_000_000,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        output_tokens=100_000,
+        reasoning_tokens=0,
+    )
+
+    # Empty cost: {} falls back to the same channel's priced base model.
+    same_channel = pricing.estimate(sample | {"model": "gemini-2.5-pro-high"})
+    assert same_channel["pricing_provider"] == "google"
+    assert same_channel["model"] == "gemini-2.5-pro"
+    assert same_channel["amount"] == Decimal("2.25")
+
+    # Explicit zero rates remain valid on both suffixed entries and base fallbacks.
+    zero_suffixed = pricing.estimate(sample | {"model": "gemini-free-exp-low"})
+    assert zero_suffixed["model"] == "gemini-free-exp-low"
+    assert zero_suffixed["amount"] == Decimal("0")
+
+    zero_base = pricing.estimate(sample | {"model": "gemini-free-preview-high"})
+    assert zero_base["model"] == "gemini-free-preview"
+    assert zero_base["amount"] == Decimal("0")
+
+    # Vertex-matched suffixed entries stay in google-vertex and never drift to google rates.
+    vertex_base = pricing.estimate(sample | {"model": "gemini-2.5-pro-medium"})
+    assert vertex_base["pricing_provider"] == "google-vertex"
+    assert vertex_base["model"] == "gemini-2.5-pro"
+    assert vertex_base["amount"] == Decimal("3.2")
+
+    vertex_unpriced = pricing.estimate(sample | {"model": "gemini-vertex-only-high"})
+    assert vertex_unpriced["amount"] is None
+
+    vertex_claude_unpriced = pricing.estimate(sample | {"model": "claude-sonnet-4-6-max"})
+    assert vertex_claude_unpriced["amount"] is None
