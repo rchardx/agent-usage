@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import pytest
 
@@ -30,15 +31,19 @@ def offline_cli_prices(monkeypatch):
 
 @pytest.fixture
 def paths(tmp_path):
+    agy = tmp_path / "antigravity"
     roots = Paths(
         tmp_path / "codex",
         tmp_path / "claude",
         tmp_path / "pi",
         tmp_path / "omp",
         tmp_path / "cache",
+        agy,
+        (agy,),
     )
     (roots.codex / "sessions").mkdir(parents=True)
     (roots.claude / "projects").mkdir(parents=True)
+    (roots.antigravity / "conversations").mkdir(parents=True)
     (roots.pi / "sessions" / "-example").mkdir(parents=True)
     (roots.omp / "sessions" / "-example").mkdir(parents=True)
     return roots
@@ -140,3 +145,135 @@ def agent_usage(response="resp-a", stamp="2026-10-01T00:01:00Z", **usage):
             },
         },
     }
+
+
+def _varint_bytes(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def proto_varint(number: int, value: int) -> bytes:
+    return _varint_bytes(number << 3) + _varint_bytes(value)
+
+
+def proto_bytes(number: int, payload: bytes) -> bytes:
+    return _varint_bytes((number << 3) | 2) + _varint_bytes(len(payload)) + payload
+
+
+def proto_timestamp(seconds: int, nanos: int = 0) -> bytes:
+    return proto_varint(1, seconds) + (proto_varint(2, nanos) if nanos else b"")
+
+
+def antigravity_usage_blob(
+    *,
+    fresh_input: int = 20,
+    total_output: int = 8,
+    cache_write: int = 2,
+    cache_read: int = 30,
+    reasoning: int = 3,
+    visible_output: int = 5,
+    model_id: int | None = None,
+    response_id: str | None = "resp-agy-1",
+    provider_message_id: str | None = None,
+    message_id: str | None = None,
+) -> bytes:
+    parts = []
+    if model_id is not None:
+        parts.append(proto_varint(1, model_id))
+    for field_num, val in (
+        (2, fresh_input),
+        (3, total_output),
+        (4, cache_write),
+        (5, cache_read),
+        (9, reasoning),
+        (10, visible_output),
+    ):
+        if val > 0:
+            parts.append(proto_varint(field_num, val))
+    if message_id:
+        parts.append(proto_bytes(7, message_id.encode()))
+    if response_id:
+        parts.append(proto_bytes(11, response_id.encode()))
+    if provider_message_id:
+        parts.append(proto_bytes(12, provider_message_id.encode()))
+    return b"".join(parts)
+
+
+def antigravity_gen_blob(
+    *,
+    model: str | None = "gemini-2.5-flash",
+    display_model: str | None = None,
+    model_id: int | None = None,
+    usage: bytes | None = None,
+    retries: list[bytes] | None = None,
+    timestamp: tuple[int, int] | None = (1_790_812_860, 0),
+    step_indices: list[int] | None = None,
+) -> bytes:
+    chat = [proto_bytes(2, b"PRIVATE-CONVERSATION-SENTINEL")]
+    if model_id is not None:
+        chat.append(proto_varint(3, model_id))
+    if usage is not None:
+        chat.append(proto_bytes(4, usage))
+    if timestamp is not None:
+        gen_info = proto_bytes(4, proto_timestamp(*timestamp))
+        chat.append(proto_bytes(9, gen_info))
+    for retry in retries or []:
+        chat.append(proto_bytes(17, proto_bytes(2, retry)))
+    if model is not None:
+        chat.append(proto_bytes(19, model.encode()))
+    if display_model is not None:
+        chat.append(proto_bytes(21, display_model.encode()))
+    root = [proto_bytes(1, b"".join(chat))]
+    for step_idx in step_indices or []:
+        root.append(proto_varint(2, step_idx))
+    return b"".join(root)
+
+
+def antigravity_step_blob(
+    *,
+    model: str | None = "gemini-2.5-flash",
+    model_id: int | None = None,
+    usage: bytes | None = None,
+    retries: list[bytes] | None = None,
+    timestamp: tuple[int, int] | None = (1_790_812_860, 0),
+) -> bytes:
+    parts = [proto_bytes(5, b"PRIVATE-CONVERSATION-SENTINEL")]
+    if timestamp is not None:
+        parts.append(proto_bytes(8, proto_timestamp(*timestamp)))
+    if usage is not None:
+        parts.append(proto_bytes(9, usage))
+    if model is not None or model_id is not None:
+        info = []
+        if model_id is not None:
+            info.append(proto_varint(1, model_id))
+        if model is not None:
+            info.append(proto_bytes(12, model.encode()))
+        parts.append(proto_bytes(24, b"".join(info)))
+    for retry in retries or []:
+        parts.append(proto_bytes(28, proto_bytes(2, retry)))
+    return b"".join(parts)
+
+
+def write_antigravity_db(
+    path,
+    *,
+    generations: list[tuple[int, bytes]] = (),
+    steps: list[tuple[int, bytes]] = (),
+    trajectories: list[tuple[int, int]] = (),
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+        conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB)")
+        conn.execute("CREATE TABLE trajectory_metadata_blob (data BLOB)")
+        conn.executemany("INSERT INTO gen_metadata (idx, data) VALUES (?, ?)", generations)
+        conn.executemany("INSERT INTO steps (idx, metadata) VALUES (?, ?)", steps)
+        conn.executemany(
+            "INSERT INTO trajectory_metadata_blob (data) VALUES (?)",
+            [(proto_bytes(2, proto_timestamp(sec, ns)),) for sec, ns in trajectories],
+        )
+    conn.close()

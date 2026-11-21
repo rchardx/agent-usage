@@ -7,17 +7,17 @@ Account allowances have a separate scope; see [Providers](providers.md).
 
 ## Token accounting
 
-| Normalized field | Codex source | Claude Code source | pi / omp source |
-| --- | --- | --- | --- |
-| Input, including cache | `input_tokens` | `input_tokens` + cache read + cache creation | `usage.input` + `usage.cacheRead` + `usage.cacheWrite` |
-| Fresh input | Input minus cache read/write, when both are known | `input_tokens` | `usage.input` |
-| Cache read | `cached_input_tokens` | `cache_read_input_tokens`, if present | `usage.cacheRead` |
-| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens`, if present | `usage.cacheWrite` |
-| Cache write, 5m / 1h TTL | Not currently reported | `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` | Not currently reported |
-| Output, including reasoning | `output_tokens` | `output_tokens` | `usage.output` |
-| Reasoning | `reasoning_output_tokens`, if present | `output_tokens_details.thinking_tokens`, if present | `usage.reasoning` (pi) / `usage.reasoningTokens` (omp), if present |
-| Other output | Output minus reasoning, when known | Output minus reasoning, when known | Output minus reasoning, when known |
-| Total | Input + output | Input + output | Input + output |
+| Normalized field | Codex source | Claude Code source | Antigravity source | pi / omp source |
+| --- | --- | --- | --- | --- |
+| Input, including cache | `input_tokens` | `input_tokens` + cache read + cache creation | fresh input + cache read + cache creation | `usage.input` + `usage.cacheRead` + `usage.cacheWrite` |
+| Fresh input | Input minus cache read/write, when both are known | `input_tokens` | `ModelUsage.input_tokens` | `usage.input` |
+| Cache read | `cached_input_tokens` | `cache_read_input_tokens`, if present | `ModelUsage.cache_read_tokens` | `usage.cacheRead` |
+| Cache write | `cache_write_input_tokens`, if present | `cache_creation_input_tokens`, if present | `ModelUsage.cache_creation_tokens` | `usage.cacheWrite` |
+| Cache write, 5m / 1h TTL | Not currently reported | `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` | Not currently reported | Not currently reported |
+| Output, including reasoning | `output_tokens` | `output_tokens` | `max(total_output_tokens, visible_output_tokens + reasoning_tokens)` | `usage.output` |
+| Reasoning | `reasoning_output_tokens`, if present | `output_tokens_details.thinking_tokens`, if present | `ModelUsage.reasoning_tokens` | `usage.reasoning` (pi) / `usage.reasoningTokens` (omp), if present |
+| Other output | Output minus reasoning, when known | Output minus reasoning, when known | Output minus reasoning, when known | Output minus reasoning, when known |
+| Total | Input + output | Input + output | Input + output | Input + output |
 
 Cache counts are components of normalized input. Reasoning is a component of
 output. TTL counts are components of cache writes. **Do not add these components
@@ -71,6 +71,15 @@ retain their serving upstream prefix (including multi-segment gateway IDs such a
 `openrouter/google/gemini-2.5-pro`). Leading `models/` API resource prefixes are
 stripped across harnesses. Sidecar files stored next to a session transcript
 (such as `changes.jsonl`) are never parsed as usage.
+
+Antigravity records per-request protobuf usage and model identifiers in SQLite
+`conversations/*.db` `gen_metadata` rows, paired with step execution timestamps
+in `steps` (opened read-only). Primary-mirror retry entries are dropped while
+distinct retry attempts remain counted, keyed by response, message or generation
+row identity. Rows missing a model stay `unknown`, and rows without a generation
+or step timestamp are counted under `missing_timestamp` rather than dated from
+conversation creation or file modification times. Copied conversation databases
+across client roots are deduplicated by event identity.
 
 ### History limitations
 

@@ -119,6 +119,19 @@ def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None
                 if clean in models.get(google_channel, {}):
                     return google_channel, clean
         return default_catalog, clean
+    if provider == "antigravity":
+        if clean.startswith("gemini-"):
+            for google_channel in ("google", "google-vertex"):
+                if clean in models.get(google_channel, {}):
+                    return google_channel, clean
+            return "google", clean
+        if clean.startswith("claude-"):
+            for anthropic_channel in ("anthropic", "google-vertex-anthropic"):
+                if clean in models.get(anthropic_channel, {}):
+                    return anthropic_channel, clean
+            return "anthropic", clean
+        if clean.startswith(("gpt-", "o1", "o3", "o4")):
+            return "openai", clean
     return None, clean
 
 

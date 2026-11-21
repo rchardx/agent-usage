@@ -14,7 +14,8 @@ and [Accounting](accounting.md) for record normalization.
 ## Requirements and compatibility
 
 Live adapters were verified on Linux/WSL with Codex CLI 0.160.0, Claude Code
-2.1.289, pi 1.5.2, and omp 18.20.2. Other versions may expose different fields.
+2.1.289, Antigravity CLI (`agy`) 1.5.14, pi 1.5.2, and omp 18.20.2. Other versions
+may expose different fields.
 Codex must be on `PATH` for live account queries. Local token reports work
 without any of the CLIs installed.
 

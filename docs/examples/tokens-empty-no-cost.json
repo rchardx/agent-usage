@@ -93,6 +93,11 @@
           "root_exists": false,
           "issues": {}
         },
+        "antigravity": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        },
         "pi": {
           "files": 0,
           "root_exists": false,

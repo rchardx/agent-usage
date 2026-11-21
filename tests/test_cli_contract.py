@@ -107,7 +107,7 @@ def test_timeout_boundaries_and_types_reach_settings(paths, monkeypatch, timeout
     assert settings.json is True
     assert settings.offline is False and settings.refresh is False
     assert settings.costs is True
-    assert settings.providers == ["codex", "claude", "pi", "omp"]
+    assert settings.providers == ["codex", "claude", "antigravity", "pi", "omp"]
 
 
 def test_optional_paths_boolean_flags_and_enum_values(paths, monkeypatch, tmp_path):

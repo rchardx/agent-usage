@@ -103,6 +103,7 @@ jobs:
           uv run --no-project --isolated --with "${wheel[0]}" agent-usage --help
           uv run --no-project --isolated --with "${wheel[0]}" agent-usage \
             --codex-home "$PWD/codex" --claude-home "$PWD/claude" \
+            --antigravity-home "$PWD/antigravity" \
             --pi-home "$PWD/pi" --omp-home "$PWD/omp" --cache-dir "$PWD/cache" \
             --offline --no-cost tokens --all --json > report.json
           uv run --no-project --isolated --with "${wheel[0]}" agent-usage schema > report.schema.json

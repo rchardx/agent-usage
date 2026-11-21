@@ -6,6 +6,7 @@
     "paths": {
       "codex": "/example/codex",
       "claude": "/example/claude",
+      "antigravity": "/example/antigravity",
       "pi": "/example/pi",
       "omp": "/example/omp",
       "cache": "/example/cache"
@@ -17,6 +18,10 @@
         "version": null
       },
       "claude": {
+        "executable": null,
+        "version": null
+      },
+      "antigravity": {
         "executable": null,
         "version": null
       },
@@ -41,6 +46,11 @@
           "issues": {}
         },
         "claude": {
+          "files": 0,
+          "root_exists": false,
+          "issues": {}
+        },
+        "antigravity": {
           "files": 0,
           "root_exists": false,
           "issues": {}

@@ -16,7 +16,7 @@ from agent_usage.cli import app
 from agent_usage.index import Index, rebuild_index
 
 runner = CliRunner()
-PROVIDERS = ["codex", "claude", "pi", "omp"]
+PROVIDERS = ["codex", "claude", "antigravity", "pi", "omp"]
 
 
 @pytest.fixture(autouse=True)

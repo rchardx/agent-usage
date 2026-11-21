@@ -1,10 +1,10 @@
 # agent-usage
 
 A local-first CLI for account allowances, token usage and API-equivalent cost
-estimates across Codex, Claude Code, pi and omp.
+estimates across Codex, Claude Code, Antigravity, pi and omp.
 
 - **Account allowances:** quota windows, reset times and credits for Codex and
-  Claude Code. pi and omp contribute local token history only.
+  Claude Code. Antigravity, pi and omp contribute local token history.
 - **Token reports:** daily usage and breakdowns by agent, model, project or session.
 - **Cost estimates:** per-request estimates using [models.dev](https://models.dev/)
   prices, with explicit explanations for unpriced records.

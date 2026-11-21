@@ -24,7 +24,7 @@ from .reports import ACCOUNT_PROVIDERS, envelope, period, quotas, summarize
 app = typer.Typer(
     no_args_is_help=False,
     pretty_exceptions_show_locals=False,
-    help="Codex, Claude Code, pi, and omp allowances and local token usage.",
+    help="Codex, Claude Code, Antigravity, pi, and omp allowances and local token usage.",
 )
 
 
@@ -32,11 +32,13 @@ class Provider(StrEnum):
     all = "all"
     codex = "codex"
     claude = "claude"
+    antigravity = "antigravity"
     pi = "pi"
     omp = "omp"
 
 
-ALL_PROVIDERS = ("codex", "claude", "pi", "omp")
+ALL_PROVIDERS = ("codex", "claude", "antigravity", "pi", "omp")
+EXECUTABLES = {"antigravity": "agy"}
 
 
 class Group(StrEnum):
@@ -160,6 +162,7 @@ def main(
     provider: Provider = typer.Option(Provider.all, help="Providers to query."),
     codex_home: Path | None = typer.Option(None, help="Override CODEX_HOME."),
     claude_home: Path | None = typer.Option(None, help="Override CLAUDE_CONFIG_DIR."),
+    antigravity_home: Path | None = typer.Option(None, help="Override the Antigravity directory."),
     pi_home: Path | None = typer.Option(None, help="Override PI_CODING_AGENT_DIR."),
     omp_home: Path | None = typer.Option(None, help="Override the omp agent directory."),
     cache_dir: Path | None = typer.Option(
@@ -182,7 +185,7 @@ def main(
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise typer.BadParameter("Unknown timezone; use an IANA name such as Asia/Tokyo.") from exc
     ctx.obj = Settings(
-        Paths.discover(codex_home, claude_home, pi_home, omp_home, cache_dir),
+        Paths.discover(codex_home, claude_home, pi_home, omp_home, cache_dir, antigravity_home),
         list(ALL_PROVIDERS) if provider == Provider.all else [provider.value],
         zone,
         as_json,
@@ -248,7 +251,7 @@ def doctor(
                 coverage = index.sync(settings.paths, settings.providers)
     versions = {}
     for provider in settings.providers:
-        executable = shutil.which(provider)
+        executable = shutil.which(EXECUTABLES.get(provider, provider))
         version = None
         if executable:
             try:
