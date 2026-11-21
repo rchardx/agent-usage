@@ -404,6 +404,19 @@
         "resets": null,
         "warnings": [],
         "error": "No matching cached snapshot."
+      },
+      {
+        "provider": "antigravity",
+        "source": "local-cache",
+        "observed_at": null,
+        "status": "unavailable",
+        "plan": null,
+        "auth_mode": null,
+        "windows": [],
+        "credits": [],
+        "resets": null,
+        "warnings": [],
+        "error": "No matching cached snapshot."
       }
     ]
   }

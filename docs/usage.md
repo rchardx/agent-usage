@@ -10,7 +10,7 @@ For command-line help, run `agent-usage --help` or
 
 ```bash
 agent-usage                                 # Account allowances + last 30 days, by day
-agent-usage quota                           # Codex/Claude windows, resets, credits
+agent-usage quota                           # Codex/Claude/Antigravity windows, resets, credits
 agent-usage --refresh quota                 # Bypass the 120-second account cache
 agent-usage --offline                       # Cached allowances + local tokens; no network
 agent-usage tokens --since 7d               # Rolling seven-day interval
@@ -30,7 +30,9 @@ agent-usage doctor                          # Offline discovery and parser diagn
 Global options (`--provider`, `--timezone`, `--offline`, `--refresh`, `--no-cost`, `--timeout`,
 and path overrides) precede the subcommand. `tokens`, `quota`, and `doctor` also
 accept their own `--json` flag. `--until` is exclusive; dates without an offset
-use the reporting timezone, which defaults to the system timezone.
+use the reporting timezone, which defaults to the system timezone. Live
+Antigravity quota queries require `agy` >= 1.5.14 on `PATH` (see
+[Providers and account data](providers.md#requirements-and-compatibility)).
 
 ## Dates and reporting timezone
 

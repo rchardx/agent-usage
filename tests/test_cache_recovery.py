@@ -28,6 +28,7 @@ def no_external_queries(monkeypatch):
 
     monkeypatch.setattr("agent_usage.reports.fetch_codex", forbidden)
     monkeypatch.setattr("agent_usage.reports.fetch_claude", forbidden)
+    monkeypatch.setattr("agent_usage.reports.fetch_antigravity", forbidden)
     monkeypatch.setattr("agent_usage.cli.load_pricing", forbidden)
 
 

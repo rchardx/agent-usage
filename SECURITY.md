@@ -25,8 +25,8 @@ OAuth credentials, redeem resets or purchase credits.
 - Claude bearer credentials are sent only to the fixed Anthropic usage endpoint;
   redirects are refused. This client-internal endpoint is not a public API
   compatibility guarantee.
-- Codex live quota queries invoke the installed `codex` executable on `PATH`.
-  Install trusted agent CLIs and dependencies.
+- Codex and Antigravity live quota queries invoke the installed `codex` and `agy`
+  executables on `PATH`. Install trusted agent CLIs and dependencies.
 - Pricing requests fetch the public models.dev catalog without sending logs,
   credentials, token counts or model selections.
 - The index omits conversation text and authentication secrets, but contains

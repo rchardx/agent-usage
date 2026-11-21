@@ -111,7 +111,11 @@ def test_offline_default_handles_missing_accounts_and_empty_logs(paths):
     result = runner.invoke(app, [*options(paths), "--offline", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    expected = {"codex": "unavailable", "claude": "unavailable"}
+    expected = {
+        "codex": "unavailable",
+        "claude": "unavailable",
+        "antigravity": "unavailable",
+    }
     assert {a["provider"]: a["status"] for a in data["quota"]["accounts"]} == expected
     assert data["tokens"]["totals"]["events"] == 0
 
@@ -241,16 +245,21 @@ def test_doctor_reports_non_subscription_auth_without_exposing_secrets(paths, mo
             }
         )
     )
+    (paths.antigravity / "settings.json").write_text(json.dumps({"modelProvider": "gemini"}))
+    monkeypatch.setenv("GEMINI_API_KEY", "test-agy-sentinel")
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gemini-proxy.example.test")
     result = runner.invoke(app, [*options(paths), "doctor", "--json"])
     assert result.exit_code == 0, result.output
     doctor = json.loads(result.output)["doctor"]
     assert doctor["auth"] == {
         "codex": {"auth_mode": "apiKey", "source": "codex-auth-file"},
         "claude": {"auth_mode": "customGateway", "source": "claude-settings"},
+        "antigravity": {"auth_mode": "customGateway", "source": "antigravity-env"},
     }
     assert doctor["claude_credentials_file_present"] is False
     assert "test-codex-sentinel" not in result.output
     assert "test-claude-sentinel" not in result.output
+    assert "test-agy-sentinel" not in result.output
 
 
 def test_gemini_tokens_and_costs_across_all_four_harnesses(paths, monkeypatch):

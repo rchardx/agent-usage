@@ -148,6 +148,7 @@ def test_non_subscription_modes_validate_against_schema(paths, monkeypatch, vali
     monkeypatch.setattr("agent_usage.cli.shutil.which", lambda _: None)
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-contract-sentinel")
     monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("AGY_ADC_AUTH", "true")
     result = runner.invoke(app, [*options(paths), "--offline", "--no-cost", *command, "--json"])
     data = validate_result(result, validator)
     assert "test-openai-contract-sentinel" not in result.stdout
@@ -159,9 +160,32 @@ def test_non_subscription_modes_validate_against_schema(paths, monkeypatch, vali
         assert by_provider["claude"]["status"] == "unavailable"
         assert by_provider["claude"]["auth_mode"] == "vertex"
         assert by_provider["claude"]["error"] is None
+        assert by_provider["antigravity"]["status"] == "unavailable"
+        assert by_provider["antigravity"]["auth_mode"] == "gcp"
+        assert by_provider["antigravity"]["error"] is None
     if "doctor" in data:
         assert data["doctor"]["auth"]["codex"]["auth_mode"] == "apiKey"
         assert data["doctor"]["auth"]["claude"]["auth_mode"] == "vertex"
+        assert data["doctor"]["auth"]["antigravity"]["auth_mode"] == "gcp"
+
+
+def test_antigravity_account_validates_and_disables_fileless_snapshot_caching(
+    paths, monkeypatch, validator
+):
+    account = AccountReport(
+        "antigravity",
+        "agy-cli",
+        observed_at=datetime.now(UTC).isoformat(),
+        plan="Pro",
+        auth_mode="google",
+        windows=[QuotaWindow("gemini-5h", "5h", 12.5, "2026-11-21T13:48:41+00:00", 300, "Gemini")],
+        credits=[CreditBalance("ai_credits", balance="500", label="AI credits")],
+    )
+    monkeypatch.setattr("agent_usage.reports.fetch_antigravity", lambda *args: account)
+    result = runner.invoke(app, [*options(paths), "--provider", "antigravity", "quota", "--json"])
+    data = validate_result(result, validator)
+    assert data["quota"]["accounts"][0]["status"] == "ok"
+    assert not list(paths.cache.glob("quota-antigravity-*.json"))
 
 
 def sample():

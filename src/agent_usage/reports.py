@@ -12,10 +12,13 @@ from .parsers import METRICS
 from .paths import Paths
 from .pricing import Pricing, cost_summary, resolve_catalog
 from .providers import (
+    antigravity_non_subscription_mode,
+    antigravity_override_mode,
     claude_non_subscription_mode,
     claude_override_mode,
     codex_config_override,
     codex_non_subscription_mode,
+    fetch_antigravity,
     fetch_claude,
     fetch_codex,
     non_subscription_account,
@@ -23,16 +26,20 @@ from .providers import (
 
 # pi/omp are multi-provider harnesses, not subscription accounts; they have no
 # account quota concept and contribute local token history only.
-ACCOUNT_PROVIDERS = ("codex", "claude")
+ACCOUNT_PROVIDERS = ("codex", "claude", "antigravity")
+CREDENTIAL_FILES = {"codex": "auth.json", "claude": ".credentials.json"}
 
 
 def snapshot_path(paths: Paths, provider: str) -> Path:
-    home = paths.codex if provider == "codex" else paths.claude
-    credentials = home / ("auth.json" if provider == "codex" else ".credentials.json")
-    try:
-        stat = credentials.stat()
-        identity = f"{home}:{stat.st_mtime_ns}:{stat.st_size}"
-    except OSError:
+    home = getattr(paths, provider)
+    cred_name = CREDENTIAL_FILES.get(provider)
+    if cred_name is not None:
+        try:
+            stat = (home / cred_name).stat()
+            identity = f"{home}:{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            identity = f"{home}:no-file-credentials"
+    else:
         identity = f"{home}:no-file-credentials"
     key = hashlib.sha256(identity.encode()).hexdigest()[:20]
     return paths.cache / f"quota-{provider}-{key}.json"
@@ -55,15 +62,18 @@ def read_snapshot(path: Path) -> dict | None:
 def _non_subscription_override(paths: Paths, provider: str) -> tuple[str, str] | None:
     if provider == "codex":
         return codex_config_override(paths.codex)
+    if provider == "antigravity":
+        return antigravity_override_mode(paths.antigravity)
     return claude_override_mode(paths.claude)
 
 
 def _local_non_subscription(paths: Paths, provider: str) -> AccountReport | None:
-    found = (
-        codex_non_subscription_mode(paths.codex)
-        if provider == "codex"
-        else claude_non_subscription_mode(paths.claude)
-    )
+    if provider == "codex":
+        found = codex_non_subscription_mode(paths.codex)
+    elif provider == "antigravity":
+        found = antigravity_non_subscription_mode(paths.antigravity)
+    else:
+        found = claude_non_subscription_mode(paths.claude)
     return non_subscription_account(provider, found[1], found[0]) if found is not None else None
 
 
@@ -71,12 +81,12 @@ def account_report(
     paths: Paths, provider: str, *, refresh: bool, offline: bool, timeout: float
 ) -> dict:
     cache_path = snapshot_path(paths, provider)
-    home = paths.codex if provider == "codex" else paths.claude
-    credentials = home / ("auth.json" if provider == "codex" else ".credentials.json")
+    home = getattr(paths, provider)
+    cred_name = CREDENTIAL_FILES.get(provider)
     override = _non_subscription_override(paths, provider)
     # Without a file identity we cannot safely bind a cache to an OS-keychain account;
     # an active API-key/gateway override also supersedes any cached subscription snapshot.
-    cacheable = credentials.is_file() and override is None
+    cacheable = cred_name is not None and (home / cred_name).is_file() and override is None
     cached = read_snapshot(cache_path) if cacheable else None
     if cached and (offline or (not refresh and cached["age_seconds"] < 120)):
         cached["status"] = "stale" if cached["age_seconds"] >= 120 else "cached"
@@ -89,11 +99,12 @@ def account_report(
             provider, "local-cache", status="unavailable", error="No matching cached snapshot."
         ).to_dict()
     try:
-        report = (
-            fetch_codex(paths.codex, timeout)
-            if provider == "codex"
-            else fetch_claude(paths.claude, timeout)
-        ).to_dict()
+        fetcher = {
+            "codex": fetch_codex,
+            "claude": fetch_claude,
+            "antigravity": fetch_antigravity,
+        }[provider]
+        report = fetcher(home, timeout).to_dict()
         if report["status"] == "ok" and cacheable and snapshot_path(paths, provider) == cache_path:
             try:
                 save_snapshot(cache_path, report)

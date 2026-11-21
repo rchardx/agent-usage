@@ -157,6 +157,7 @@ def test_offline_json_is_clean_and_never_fetches(paths, monkeypatch, command, gl
 
     monkeypatch.setattr("agent_usage.reports.fetch_codex", forbidden)
     monkeypatch.setattr("agent_usage.reports.fetch_claude", forbidden)
+    monkeypatch.setattr("agent_usage.reports.fetch_antigravity", forbidden)
     monkeypatch.setattr("urllib.request.urlopen", forbidden)
     monkeypatch.setattr("agent_usage.cli.shutil.which", lambda _: None)
     # Exercise the real offline price loader, not conftest's default CLI stub.

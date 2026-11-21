@@ -274,6 +274,8 @@ def test_rendering_does_not_change_exact_json_values(detail):
         ("claude", "api_key", "API key"),
         ("claude", "vertex", "Google Cloud Vertex AI"),
         ("claude", "bedrock", "Amazon Bedrock"),
+        ("antigravity", "apiKey", "API key"),
+        ("antigravity", "gcp", "Google Cloud Vertex AI"),
     ],
 )
 @pytest.mark.parametrize("width", [80, 160])
@@ -298,3 +300,19 @@ def test_non_subscription_account_panel_avoids_login_error_noise(
     assert f"{expected_label} mode · subscription allowances not applicable" in text
     assert "Use local token reports and API cost estimates" in text
     assert max(map(len, text.splitlines())) <= width
+
+
+@pytest.mark.parametrize("width", [80, 160, 220])
+def test_three_account_panels_render_within_width(width):
+    accounts = [
+        AccountReport(name, "test", status="unavailable", error="Not logged in.").to_dict()
+        for name in ("codex", "claude", "antigravity")
+    ]
+    stream = io.StringIO()
+    render_quotas({"accounts": accounts}, Console(file=stream, width=width, color_system=None), UTC)
+    text = stream.getvalue()
+    for title in ("CODEX", "CLAUDE", "ANTIGRAVITY"):
+        assert title in text
+    assert max(map(len, text.splitlines())) <= width
+    if width >= 140:
+        assert not text.endswith("\n\n")
