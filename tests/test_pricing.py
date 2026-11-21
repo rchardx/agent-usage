@@ -721,3 +721,67 @@ def test_antigravity_suffix_fallback_handles_empty_cost_zero_rates_and_channel_b
 
     vertex_claude_unpriced = pricing.estimate(sample | {"model": "claude-sonnet-4-6-max"})
     assert vertex_claude_unpriced["amount"] is None
+
+
+def test_compiled_pricing_cache_reuses_catalog_lookup_across_tiers_and_errors(monkeypatch):
+    pricing = gemini_catalog()
+    calls = []
+    real_resolve = __import__("agent_usage.pricing", fromlist=["resolve_catalog"]).resolve_catalog
+
+    def counting_resolve(provider, model, models):
+        calls.append((provider, model))
+        return real_resolve(provider, model, models)
+
+    monkeypatch.setattr("agent_usage.pricing.resolve_catalog", counting_resolve)
+    small = event(
+        provider="pi",
+        model="google/gemini-2.5-pro",
+        input_tokens=100_000,
+        request_input_tokens=100_000,
+        cache_read_tokens=40_000,
+        cache_write_tokens=0,
+        output_tokens=20_000,
+    )
+    large = small | {
+        "input_tokens": 300_000,
+        "request_input_tokens": 300_000,
+        "cache_read_tokens": 100_000,
+    }
+    unknown_tier = small | {"request_input_tokens": None}
+
+    assert pricing.estimate(small)["amount"] == Decimal("0.28")
+    assert pricing.estimate(large)["amount"] == Decimal("0.825")
+    assert pricing.estimate(unknown_tier)["reason"] == "unknown_request_size_for_tier"
+    assert calls == [("pi", "google/gemini-2.5-pro")]
+
+
+def test_repeated_unpriced_rate_and_tier_errors_do_not_retain_exceptions():
+    pricing = Pricing(
+        {
+            "openai": {
+                "missing-cache-rate": {"cost": {"input": 1, "output": 2}},
+                "bad-tier": {"cost": {"input": 1, "output": 2, "tiers": [{"tier": {"size": -1}}]}},
+                "bad-structure": {"cost": "not-a-dict"},
+            }
+        },
+        "live",
+    )
+    for _ in range(100):
+        assert (
+            pricing.estimate(event(model="missing-cache-rate"))["reason"]
+            == "missing_cache_read_price"
+        )
+        assert pricing.estimate(event(model="bad-tier"))["reason"] == "invalid_price_tier"
+        assert (
+            pricing.estimate(event(model="bad-structure"))["reason"]
+            == "unsupported_price_structure"
+        )
+
+    missing_entry = pricing._compiled[("codex", "missing-cache-rate")]
+    assert missing_entry.base_table is not None
+    assert missing_entry.base_table.rates["cache_read"] == "missing_cache_read_price"
+    assert all(not isinstance(v, BaseException) for v in missing_entry.base_table.rates.values())
+    assert pricing._compiled[("codex", "bad-tier")].tier_error == "invalid_price_tier"
+    assert pricing._compiled[("codex", "bad-structure")].structure_error == (
+        "unsupported_price_structure"
+    )

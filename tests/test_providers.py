@@ -2,6 +2,7 @@ import io
 import json
 import queue
 import subprocess
+import threading
 import time
 import urllib.error
 from importlib.metadata import version
@@ -692,3 +693,62 @@ def test_antigravity_non_subscription_modes_skip_cli_and_redact_secrets(
     assert antigravity_auth_inspection(paths.antigravity) == (expected_mode, expected_source)
     assert "test-gem-sentinel" not in serialized
     assert "test-gem-gw-sentinel" not in serialized
+
+
+def test_antigravity_queries_usage_and_credits_concurrently_with_full_timeout(paths, monkeypatch):
+    barrier = threading.Barrier(2, timeout=2)
+    timeouts = []
+
+    def concurrent_run(cmd, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        barrier.wait()
+        if "/usage" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(_agy_usage_envelope()), "")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(_agy_credits_envelope(125)), "")
+
+    monkeypatch.setattr("agent_usage.providers.subprocess.run", concurrent_run)
+    report = fetch_antigravity(paths.antigravity, timeout=7.5)
+    assert timeouts == [7.5, 7.5]
+    assert len(report.windows) == 4
+    assert report.credits[0].balance == "125"
+
+
+def test_codex_rpc_close_closes_stdin_before_terminating():
+    events = []
+
+    class FakeStream:
+        def __init__(self, name, fail=False):
+            self.name = name
+            self.fail = fail
+
+        def close(self):
+            events.append(f"close:{self.name}")
+            if self.fail:
+                raise BrokenPipeError("already closed")
+
+    class FakeProcess:
+        stdin = FakeStream("stdin", fail=True)
+        stdout = FakeStream("stdout")
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def terminate():
+            events.append("terminate")
+
+        @staticmethod
+        def wait(timeout=None):
+            events.append("wait")
+
+    class FakeReader:
+        @staticmethod
+        def join(timeout=None):
+            events.append("join")
+
+    rpc = object.__new__(CodexRPC)
+    rpc.process = FakeProcess()
+    rpc.reader = FakeReader()
+    rpc.close()
+    assert events == ["close:stdin", "terminate", "wait", "join", "close:stdout"]

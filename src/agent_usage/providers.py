@@ -11,6 +11,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -101,6 +102,11 @@ class CodexRPC:
             return result
 
     def close(self):
+        assert self.process.stdin is not None and self.process.stdout is not None
+        try:
+            self.process.stdin.close()
+        except OSError:
+            pass
         if self.process.poll() is None:
             self.process.terminate()
         try:
@@ -109,8 +115,6 @@ class CodexRPC:
             self.process.kill()
             self.process.wait()
         self.reader.join(timeout=1)
-        assert self.process.stdin is not None and self.process.stdout is not None
-        self.process.stdin.close()
         self.process.stdout.close()
 
 
@@ -703,16 +707,14 @@ def fetch_antigravity(home: Path, timeout: float = 10) -> AccountReport:
     non_sub = antigravity_non_subscription_mode(home)
     if non_sub is not None:
         return non_subscription_account("antigravity", non_sub[1], non_sub[0])
-    deadline = time.monotonic() + timeout
-    usage_data = _run_agy_command("usage", home, timeout)
-    credits_data: dict[str, Any] | None = None
-    credits_warning: str | None = None
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        credits_warning = "Skipped AI credits check after quota query consumed timeout."
-    else:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        usage_future = pool.submit(_run_agy_command, "usage", home, timeout)
+        credits_future = pool.submit(_run_agy_command, "credits", home, timeout)
+        usage_data = usage_future.result()
+        credits_data: dict[str, Any] | None = None
+        credits_warning: str | None = None
         try:
-            credits_data = _run_agy_command("credits", home, remaining)
+            credits_data = credits_future.result()
         except ProbeError:
             credits_warning = "AI credits status unavailable."
     report = normalize_antigravity(usage_data, credits_data)

@@ -174,3 +174,48 @@ def test_claude_legacy_and_unified_windows_are_not_duplicated():
         "pro",
     )
     assert [w.bucket for w in result.windows] == ["five_hour", "seven_day_sonnet"]
+
+
+def test_summarize_merges_group_totals_and_deduplicates_sessions_across_days():
+    from test_pricing import catalog
+
+    zone = ZoneInfo("UTC")
+    first, _ = parse_claude(
+        claude_usage("msg-1", stamp="2026-10-01T23:30:00Z", output=10), {}, "fallback"
+    )
+    second, _ = parse_claude(
+        claude_usage("msg-2", stamp="2026-10-02T00:30:00Z", output=20, output_tokens_details={}),
+        {},
+        "fallback",
+    )
+    d1 = {**asdict(first), "model": "test-model"}
+    d2 = {**asdict(second), "model": "unpriced-model"}
+    snapshot = [dict(d1), dict(d2)]
+
+    pricing = catalog(provider="anthropic")
+    report = summarize(
+        [d1, d2],
+        datetime(2026, 10, 1, tzinfo=UTC),
+        datetime(2026, 10, 3, tzinfo=UTC),
+        "day",
+        zone,
+        {},
+        pricing,
+    )
+    # Input dicts must not be mutated with internal cost keys.
+    assert [d1, d2] == snapshot
+    assert len(report["groups"]) == 2
+    assert [g["sessions"] for g in report["groups"]] == [1, 1]
+    # Same (provider, session) across both days counts once in totals.
+    assert report["totals"]["sessions"] == 1
+    assert report["totals"]["events"] == 2
+    assert report["totals"]["metrics"]["reasoning_tokens"] == {
+        "tokens": None,
+        "known_tokens": 3,
+        "observed_events": 1,
+        "total_events": 2,
+    }
+    cost = report["totals"]["estimated_cost"]
+    assert cost["amount"] is None
+    assert cost["priced_events"] == 1
+    assert cost["unpriced_reasons"] == {"model_not_priced": 1}
