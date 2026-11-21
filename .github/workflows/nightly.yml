@@ -46,12 +46,19 @@ jobs:
             exit 0
           fi
           # Listing returns an empty result for a missing tag/release, not for API failures.
-          tag=$(gh api "$api/git/matching-refs/tags/nightly" --jq '.[] | select(.ref=="refs/tags/nightly") | .object | if .type=="commit" then .sha else error("nightly must be lightweight") end')
-          gh api --paginate "$api/releases?per_page=100" --jq '.[] | select(.tag_name=="nightly")' > release.json
-          release=$(jq -r '.id' release.json)
+          tag_sha=$(gh api "$api/git/matching-refs/tags/nightly" \
+            --jq '.[] | select(.ref=="refs/tags/nightly" and .object.type=="tag") | .object.sha')
+          if [[ -n $tag_sha ]]; then
+            [[ $tag_sha =~ ^[0-9a-f]{40}$ ]]
+            gh api "$api/git/tags/$tag_sha" > tag.json
+          else
+            echo 'null' > tag.json
+          fi
+          gh api --paginate "$api/releases?per_page=100" --jq '.[] | select(.tag_name=="nightly")' \
+            | jq -s --slurpfile tag tag.json '{releases: ., tag: $tag[0]}' > state.json
           build=true
-          if [[ $FORCE != true && $sha == "$tag" && -n $release ]]; then
-            complete=$(python3 scripts/nightly_complete.py "$sha" "$GITHUB_REPOSITORY" < release.json)
+          if [[ $FORCE != true ]]; then
+            complete=$(python3 scripts/nightly_complete.py "$sha" "$GITHUB_REPOSITORY" < state.json)
             if [[ $complete == true ]]; then build=false; fi
           fi
           printf 'sha=%s\nbuild=%s\n' "$sha" "$build" >> "$GITHUB_OUTPUT"
@@ -153,7 +160,7 @@ jobs:
         with:
           name: nightly-dist
           path: dist
-      - name: Upload and publish nightly before removing stale assets
+      - name: Stage distributions, stamp annotated tag, and replace the nightly release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -162,6 +169,18 @@ jobs:
         shell: bash
         run: |
           api="repos/$GH_REPO"
+          draft_id=""
+          published=false
+          cleanup_draft() {
+            local status=$?
+            if [[ $published != true && -n $draft_id ]]; then
+              if [[ $(gh api "$api/releases/$draft_id" --jq '.draft' 2>/dev/null || true) == true ]]; then
+                gh api -X DELETE "$api/releases/$draft_id" --silent || true
+              fi
+            fi
+            exit "$status"
+          }
+          trap cleanup_draft EXIT
           # Re-running failed jobs can reuse the SHA from an earlier plan.
           head=$(gh api "$api/git/ref/heads/main" --jq '.object.sha')
           [[ $head =~ ^[0-9a-f]{40}$ ]]
@@ -173,25 +192,106 @@ jobs:
           sdist="agent_usage-$VERSION.tar.gz"
           test -s "dist/$wheel"
           test -s "dist/$sdist"
-          # Recheck with write permission: a previous attempt may have left a draft.
-          gh api --paginate "$api/releases?per_page=100" --jq '.[] | select(.tag_name=="nightly")' > release.json
-          if [[ -s release.json ]]; then
-            decision=$(python3 scripts/nightly_complete.py "$SHA" "$GH_REPO" "$VERSION" < release.json)
+          notes="Rolling development build $VERSION from $GH_REPO@$SHA. Verified on the minimum and development Python versions. Build: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+          # Recheck with write permission: a previous attempt may have left a draft or partial tag.
+          tag_ref_sha=$(gh api "$api/git/matching-refs/tags/nightly" \
+            --jq '.[] | select(.ref=="refs/tags/nightly" and .object.type=="tag") | .object.sha')
+          if [[ -n $tag_ref_sha ]]; then
+            [[ $tag_ref_sha =~ ^[0-9a-f]{40}$ ]]
+            gh api "$api/git/tags/$tag_ref_sha" > tag.json
           else
-            gh release create nightly --draft --prerelease --latest=false --target "$SHA" --title Nightly --notes ''
-            decision=upload
+            echo 'null' > tag.json
           fi
+          gh api --paginate "$api/releases?per_page=100" --jq '.[] | select(.tag_name=="nightly")' \
+            | jq -s --slurpfile tag tag.json '{releases: ., tag: $tag[0]}' > state.json
+          decision=$(python3 scripts/nightly_complete.py "$SHA" "$GH_REPO" "$VERSION" < state.json)
           case "$decision" in
-            skip) echo 'A newer nightly is already published for this commit.'; exit 0 ;;
-            resume) echo 'Verified published assets; resuming tag and cleanup.' ;;
+            skip)
+              echo 'A newer nightly is already published for this commit.'
+              exit 0
+              ;;
+            resume-clean)
+              echo 'Verified published release and annotated tag; resuming cleanup.'
+              ;;
+            resume-tag)
+              echo 'Verified published release; repairing annotated tag and cleanup.'
+              tag_date=$(jq -r '.releases[0].published_at' state.json)
+              ;;
             upload)
-              gh release upload nightly "dist/$wheel" "dist/$sdist" --clobber
-              gh release edit nightly --draft=false --prerelease --latest=false --target "$SHA" --title Nightly \
-                --notes "Rolling development build $VERSION from $GH_REPO@$SHA. Verified on the minimum and development Python versions. Build: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+              draft_tag="nightly-draft-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              draft_id=$(jq -n \
+                --arg tag "$draft_tag" \
+                --arg target "$SHA" \
+                '{
+                  tag_name: $tag,
+                  target_commitish: $target,
+                  name: "Nightly",
+                  body: "",
+                  draft: true,
+                  prerelease: true
+                }' | gh api "$api/releases" --input - --jq '.id')
+              [[ $draft_id =~ ^[0-9]+$ ]]
+              gh release upload "$draft_tag" "dist/$wheel" "dist/$sdist" --clobber
+              gh api "$api/releases/$draft_id" | python3 scripts/nightly_complete.py --verify-staged "$VERSION"
+              tag_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
               ;;
             *) exit 1 ;;
           esac
-          gh api -X PATCH "$api/git/refs/tags/nightly" -f sha="$SHA" -F force=true --silent
-          gh release view nightly --json assets | jq -r --arg w "$wheel" --arg s "$sdist" \
-            '.assets[] | select(.name!=$w and .name!=$s) | .apiUrl' > stale
-          while IFS= read -r asset; do gh api -X DELETE "$asset"; done < stale
+          if [[ $decision == upload || $decision == resume-tag ]]; then
+            tag_sha=$(jq -n \
+              --arg message "$notes" \
+              --arg object "$SHA" \
+              --arg date "$tag_date" \
+              '{
+                tag: "nightly",
+                message: $message,
+                object: $object,
+                type: "commit",
+                tagger: {
+                  name: "github-actions[bot]",
+                  email: "41898282+github-actions[bot]@users.noreply.github.com",
+                  date: $date
+                }
+              }' | gh api "$api/git/tags" --input - --jq '.sha')
+            [[ $tag_sha =~ ^[0-9a-f]{40}$ ]]
+            has_tag=$(gh api "$api/git/matching-refs/tags/nightly" --jq 'any(.[]; .ref == "refs/tags/nightly")')
+          fi
+          if [[ $decision == upload ]]; then
+            old_id=$(jq -r '.releases[0].id // empty' state.json)
+            if [[ -n $old_id ]]; then
+              gh api -X DELETE "$api/releases/$old_id"
+            fi
+          fi
+          if [[ $decision == upload || $decision == resume-tag ]]; then
+            if [[ $has_tag == true ]]; then
+              gh api -X PATCH "$api/git/refs/tags/nightly" -f sha="$tag_sha" -F force=true --silent
+            else
+              gh api "$api/git/refs" -f ref="refs/tags/nightly" -f sha="$tag_sha" --silent
+            fi
+          fi
+          if [[ $decision == upload ]]; then
+            jq -n \
+              --arg target "$SHA" \
+              --arg body "$notes" \
+              '{
+                tag_name: "nightly",
+                target_commitish: $target,
+                name: "Nightly",
+                body: $body,
+                draft: false,
+                prerelease: true,
+                make_latest: "false"
+              }' | gh api -X PATCH "$api/releases/$draft_id" --input - --silent
+            published=true
+          else
+            gh release view nightly --json assets | jq -r --arg w "$wheel" --arg s "$sdist" \
+              '.assets[] | select(.name!=$w and .name!=$s) | .apiUrl' > stale_assets
+            while IFS= read -r asset; do
+              if [[ -n $asset ]]; then gh api -X DELETE "$asset"; fi
+            done < stale_assets
+          fi
+          gh api --paginate "$api/releases?per_page=100" \
+            --jq '.[] | select(.draft == true and (.tag_name | test("^nightly-draft-[0-9]+-[0-9]+$"))) | .id' > stale_drafts
+          while IFS= read -r id; do
+            if [[ -n $id ]]; then gh api -X DELETE "$api/releases/$id"; fi
+          done < stale_drafts
