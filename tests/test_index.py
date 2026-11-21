@@ -1,7 +1,9 @@
 import json
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from conftest import (
@@ -845,3 +847,184 @@ def test_antigravity_unreadable_wal_or_db_preserves_index_and_retries_after_chmo
             assert len(index.events(paths, ["antigravity"])) == 2
     finally:
         writer.close()
+
+
+def test_same_size_rewrite_with_preserved_mtime_is_detected_by_anchor(paths):
+    source = paths.claude / "projects/anchor.jsonl"
+    write_rows(source, [claude_usage("msg-anchor", output=10)])
+    with Index(paths.cache) as index:
+        first = index.sync(paths, ["claude"])
+        assert first["files_updated"] == 1
+        second = index.sync(paths, ["claude"])
+        assert second["files_updated"] == 0
+        assert second["bytes_read"] == 0
+
+    stat = source.stat()
+    rewritten = source.read_text(encoding="utf-8").replace(
+        '"output_tokens": 10', '"output_tokens": 90'
+    )
+    assert len(rewritten.encode("utf-8")) == stat.st_size
+    source.write_text(rewritten, encoding="utf-8", newline="\n")
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with Index(paths.cache) as index:
+        third = index.sync(paths, ["claude"])
+        events = index.events(paths, ["claude"])
+    assert third["files_updated"] == 1
+    assert events[0]["output_tokens"] == 90
+
+
+def test_overflowing_64bit_token_count_reports_invalid_record_without_aborting_sync(paths):
+    source = paths.claude / "projects/overflow.jsonl"
+    valid = claude_usage("msg-ok", output=15)
+    too_large = claude_usage("msg-overflow", output=2**63)
+    too_large["requestId"] = "req-overflow"
+    write_rows(source, [valid, too_large])
+
+    db_path = paths.antigravity / "conversations/overflow.db"
+    write_antigravity_db(
+        db_path,
+        generations=[
+            (
+                0,
+                antigravity_gen_blob(
+                    usage=antigravity_usage_blob(fresh_input=25, response_id="ok")
+                ),
+            ),
+            (
+                1,
+                antigravity_gen_blob(
+                    usage=antigravity_usage_blob(
+                        fresh_input=(1 << 63) - 1, cache_read=10, response_id="overflow"
+                    )
+                ),
+            ),
+        ],
+    )
+
+    with Index(paths.cache) as index:
+        cov = index.sync(paths, ["claude", "antigravity"])
+        events = index.events(paths, ["claude", "antigravity"])
+    assert cov["issues"] == {"invalid_record": 2}
+    assert {e["provider"]: e["output_tokens"] for e in events} == {"claude": 15, "antigravity": 8}
+
+
+def test_interrupted_sync_preserves_earlier_completed_file_checkpoints(paths, monkeypatch):
+    first_file = paths.claude / "projects/01-first.jsonl"
+    second_file = paths.claude / "projects/02-second.jsonl"
+    write_rows(first_file, [claude_usage("msg-1", output=10)])
+    write_rows(second_file, [claude_usage("msg-2", output=20)])
+
+    real_parse = __import__("agent_usage.index", fromlist=["PARSERS"]).PARSERS["claude"]
+
+    def interrupt_on_second(row, state, stem):
+        if stem == "02-second":
+            raise KeyboardInterrupt
+        return real_parse(row, state, stem)
+
+    with Index(paths.cache) as index:
+        with monkeypatch.context() as mp:
+            mp.setitem(
+                __import__("agent_usage.index", fromlist=["PARSERS"]).PARSERS,
+                "claude",
+                interrupt_on_second,
+            )
+            with pytest.raises(KeyboardInterrupt):
+                index.sync(paths, ["claude"])
+        assert [e["output_tokens"] for e in index.events(paths, ["claude"])] == [10]
+        resumed = index.sync(paths, ["claude"])
+        assert resumed["files_updated"] == 1
+        assert sorted(e["output_tokens"] for e in index.events(paths, ["claude"])) == [10, 20]
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX non-root file permissions required",
+)
+def test_unreadable_jsonl_after_initial_sync_reports_issue_and_preserves_events(paths):
+    first_file = paths.claude / "projects/first.jsonl"
+    second_file = paths.claude / "projects/second.jsonl"
+    write_rows(first_file, [claude_usage("msg-1", output=10)])
+    write_rows(second_file, [claude_usage("msg-2", output=20)])
+    with Index(paths.cache) as index:
+        assert index.sync(paths, ["claude"])["files_updated"] == 2
+        first_file.chmod(0o000)
+        write_rows(
+            second_file, [claude_usage("msg-2", output=20), claude_usage("msg-3", output=30)]
+        )
+        try:
+            cov = index.sync(paths, ["claude"])
+            assert cov["issues"] == {"unreadable_file": 1}
+            assert cov["files_updated"] == 1
+            # Previously indexed event for first_file remains intact alongside sibling update.
+            assert len(index.events(paths, ["claude"])) == 3
+        finally:
+            first_file.chmod(0o644)
+
+
+def test_coverage_events_filters_in_sqlite_with_exact_cross_file_dedup_and_microseconds(paths):
+    # Event 1: earlier copy before period, later copy inside -> MIN(timestamp) < start (excluded).
+    early_copy = claude_usage("msg-straddle-start", stamp="2026-10-01T14:59:59.999999Z", output=10)
+    late_copy = claude_usage("msg-straddle-start", stamp="2026-10-01T15:00:05Z", output=25)
+    # Event 2: boundary at 15:00:00+00:00 (00:00 Asia/Tokyo) vs 15:00:00.000001+00:00.
+    at_start = claude_usage("msg-at-start", stamp="2026-10-01T15:00:00Z", output=15)
+    at_start["requestId"] = "req-start"
+    after_start_us = claude_usage("msg-us", stamp="2026-10-01T15:00:00.000001Z", output=18)
+    after_start_us["requestId"] = "req-us"
+    # Event 3: earlier copy inside period, completion copy after end -> included with MAX(output).
+    in_window = claude_usage("msg-straddle-end", stamp="2026-10-02T14:59:59.500000Z", output=12)
+    in_window["requestId"] = "req-end"
+    after_end_copy = claude_usage("msg-straddle-end", stamp="2026-10-02T15:00:01Z", output=40)
+    after_end_copy["requestId"] = "req-end"
+    # Event 4: exact exclusive end 2026-10-02T15:00:00Z -> excluded.
+    at_end = claude_usage("msg-at-end", stamp="2026-10-02T15:00:00Z", output=99)
+    at_end["requestId"] = "req-at-end"
+
+    write_rows(paths.claude / "projects/a.jsonl", [early_copy, at_start, after_start_us, in_window])
+    write_rows(paths.claude / "projects/b.jsonl", [late_copy, after_end_copy, at_end])
+
+    zone = ZoneInfo("Asia/Tokyo")
+    start = datetime(2026, 10, 2, 0, 0, tzinfo=zone)
+    end = datetime(2026, 10, 3, 0, 0, tzinfo=zone)
+    with Index(paths.cache) as index:
+        index.sync(paths, ["claude"])
+        selected, stats = index.coverage_events(paths, ["claude"], start, end)
+
+    assert stats == {
+        "indexed_events": 5,
+        "earliest_record": "2026-10-01T14:59:59.999999+00:00",
+        "latest_record": "2026-10-02T15:00:00+00:00",
+    }
+    by_out = {row["output_tokens"]: row["timestamp"] for row in selected}
+    assert by_out == {
+        15: "2026-10-01T15:00:00+00:00",
+        18: "2026-10-01T15:00:00.000001+00:00",
+        40: "2026-10-02T14:59:59.500000+00:00",
+    }
+
+
+def test_single_provider_coverage_events_scopes_candidates_to_selected_provider(paths):
+    write_rows(
+        paths.claude / "projects/heavy.jsonl",
+        [claude_usage(f"msg-{i}", stamp="2026-10-02T01:00:00Z") for i in range(50)],
+    )
+    write_rows(
+        paths.pi / "sessions/-example/2026-10-02T00-00-00-000Z_one.jsonl",
+        [agent_session("pi-one"), agent_usage("resp-pi", stamp="2026-10-02T02:00:00Z")],
+    )
+    zone = ZoneInfo("UTC")
+    start = datetime(2026, 10, 2, 0, 0, tzinfo=zone)
+    end = datetime(2026, 10, 3, 0, 0, tzinfo=zone)
+    with Index(paths.cache) as index:
+        index.sync(paths, ["claude", "pi"])
+        selected, stats = index.coverage_events(paths, ["pi"], start, end)
+        plan = index.db.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT DISTINCT e0.provider, e0.event_id "
+            "FROM events e0 JOIN active_files USING(path) "
+            "WHERE e0.provider IN ('pi') AND e0.timestamp >= ? AND e0.timestamp < ?",
+            ("2026-10-02T00:00:00+00:00", "2026-10-03T00:00:00+00:00"),
+        ).fetchall()
+    assert stats["indexed_events"] == 1
+    assert len(selected) == 1
+    assert selected[0]["provider"] == "pi"
+    assert any("event_provider_time" in row[3] for row in plan)

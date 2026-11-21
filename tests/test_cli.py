@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -355,3 +356,84 @@ def test_gemini_tokens_and_costs_across_all_four_harnesses(paths, monkeypatch):
 
 def recent():
     return (datetime.now(UTC) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+
+
+def test_default_command_runs_quota_and_token_reports_concurrently(paths, monkeypatch):
+    barrier = threading.Barrier(2, timeout=2)
+
+    def concurrent_quota(settings):
+        barrier.wait()
+        return {"scope": "account", "accounts": []}
+
+    def concurrent_tokens(settings, by="provider"):
+        barrier.wait()
+        return {"scope": "local-records", "group_by": by}
+
+    monkeypatch.setattr("agent_usage.cli.quota_report", concurrent_quota)
+    monkeypatch.setattr("agent_usage.cli.token_report", concurrent_tokens)
+    result = runner.invoke(app, [*options(paths), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert list(payload.keys()) == ["schema_version", "generated_at", "quota", "tokens"]
+
+
+@pytest.mark.parametrize(
+    ("since", "until", "expected_events"),
+    [
+        ("0001-01-01T00:00:00+09:00", "9999-12-31T23:59:59-05:00", 1),
+        ("2026-10-01T00:00:00Z", "9999-12-31T23:59:59-05:00", 1),
+        ("0001-01-01T00:00:00+09:00", "0001-01-01T01:00:00+09:00", 0),
+        ("9999-12-31T22:00:00-05:00", "9999-12-31T23:59:59-05:00", 0),
+    ],
+)
+def test_extreme_year_offsets_do_not_overflow_utc_period_pushdown(
+    paths, since, until, expected_events
+):
+    write_rows(paths.claude / "projects/main.jsonl", [claude_usage()])
+    result = runner.invoke(
+        app,
+        [
+            *options(paths),
+            "--no-cost",
+            "tokens",
+            "--since",
+            since,
+            "--until",
+            until,
+            "--by",
+            "day",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    tokens = json.loads(result.stdout)["tokens"]
+    assert tokens["totals"]["events"] == expected_events
+    assert tokens["coverage"]["indexed_events"] == 1
+
+
+def test_file_deleted_between_discovery_and_sync_is_excluded_from_report(paths, monkeypatch):
+    source = paths.claude / "projects/vanished.jsonl"
+    write_rows(source, [claude_usage("msg-vanish", output=12)])
+    first = runner.invoke(
+        app, [*options(paths), "--provider", "claude", "--no-cost", "tokens", "--all", "--json"]
+    )
+    assert first.exit_code == 0, first.output
+    assert json.loads(first.stdout)["tokens"]["totals"]["events"] == 1
+
+    real_files = type(paths).files
+
+    def discover_then_unlink(self, provider):
+        found = real_files(self, provider)
+        if provider == "claude" and source.exists():
+            source.unlink()
+        return found
+
+    monkeypatch.setattr(type(paths), "files", discover_then_unlink)
+    second = runner.invoke(
+        app, [*options(paths), "--provider", "claude", "--no-cost", "tokens", "--all", "--json"]
+    )
+    assert second.exit_code == 0, second.output
+    tokens = json.loads(second.stdout)["tokens"]
+    assert tokens["coverage"]["issues"] == {"unreadable_file": 1}
+    assert tokens["totals"]["events"] == 0
+    assert tokens["coverage"]["indexed_events"] == 0

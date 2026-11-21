@@ -2,6 +2,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -87,20 +88,33 @@ def token_report(
         start, end = period(since, until, month, all_time, settings.zone, today=today)
     except (ValueError, OverflowError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    with index_errors(), Index(settings.paths.cache) as index:
-        coverage = index.sync(settings.paths, settings.providers)
-        events = index.events(settings.paths, settings.providers)
-    pricing = (
-        load_pricing(
-            settings.paths.cache,
-            offline=settings.offline,
-            refresh=settings.refresh,
-            timeout=settings.timeout,
-        )
-        if settings.costs
-        else None
-    )
-    result = summarize(events, start, end, by, settings.zone, coverage, pricing)
+    pricing_future: Future | None = None
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with index_errors(), Index(settings.paths.cache) as index:
+            if settings.costs:
+                pricing_future = pool.submit(
+                    load_pricing,
+                    settings.paths.cache,
+                    offline=settings.offline,
+                    refresh=settings.refresh,
+                    timeout=settings.timeout,
+                )
+            files_by_provider = {
+                provider: settings.paths.files(provider) for provider in settings.providers
+            }
+            coverage = index.sync(
+                settings.paths, settings.providers, files_by_provider=files_by_provider
+            )
+            events, index_stats = index.coverage_events(
+                settings.paths,
+                settings.providers,
+                start,
+                end,
+                files_by_provider=files_by_provider,
+            )
+            coverage.update(index_stats)
+        pricing = pricing_future.result() if pricing_future is not None else None
+    result = summarize(events, start, end, by, settings.zone, coverage, pricing, prefiltered=True)
     result["period"]["label"] = (
         "Today"
         if today
@@ -201,10 +215,13 @@ def main(
     if ctx.invoked_subcommand is None:
         # Terminals get one row per day; JSON keeps provider totals for automation.
         by = "provider" if ctx.obj.json else "day"
-        parts = {}
         if any(name in ACCOUNT_PROVIDERS for name in ctx.obj.providers):
-            parts["quota"] = quota_report(ctx.obj)
-        parts["tokens"] = token_report(ctx.obj, by=by)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                quota_future = pool.submit(quota_report, ctx.obj)
+                tokens_data = token_report(ctx.obj, by=by)
+                parts = {"quota": quota_future.result(), "tokens": tokens_data}
+        else:
+            parts = {"tokens": token_report(ctx.obj, by=by)}
         output(ctx.obj, envelope(**parts))
 
 

@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -213,12 +213,55 @@ def catalog_models(data: dict) -> dict:
     return result
 
 
+def _error_reason(exc: Exception) -> str:
+    return str(exc) if isinstance(exc, ValueError) else "unsupported_price_structure"
+
+
+@dataclass
+class _CompiledRateTable:
+    raw: dict
+    has_reasoning: bool
+    rates: dict[str, Decimal | str] = field(default_factory=dict)
+
+    def get(self, name: str) -> Decimal:
+        cached = self.rates.get(name)
+        if cached is None:
+            try:
+                cached = rate(self.raw, name)
+            except (ValueError, TypeError, KeyError, AttributeError, InvalidOperation) as exc:
+                cached = _error_reason(exc)
+            self.rates[name] = cached
+        if isinstance(cached, str):
+            raise ValueError(cached)
+        return cached
+
+
+@dataclass
+class _CompiledModel:
+    provider: str | None
+    model_id: str
+    priced: bool
+    has_cache_write: bool = False
+    base_table: _CompiledRateTable | None = None
+    has_tiers: bool = False
+    tier_error: str | None = None
+    tiers: tuple[tuple[int, _CompiledRateTable], ...] = ()
+    structure_error: str | None = None
+
+
+def _compile_rate_table(raw: dict) -> _CompiledRateTable:
+    return _CompiledRateTable(raw=raw, has_reasoning="reasoning" in raw)
+
+
 @dataclass
 class Pricing:
     models: dict
     status: str
     fetched_at: str | None = None
     error: str | None = None
+    _compiled: dict[tuple[str, str], _CompiledModel] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def metadata(self) -> dict:
         return {
@@ -234,23 +277,88 @@ class Pricing:
             ),
         }
 
-    def estimate(self, event: dict) -> dict:
-        provider, model_id = resolve_catalog(event["provider"], event["model"], self.models)
+    def _compile_model(self, agent: str, model_name: str) -> _CompiledModel:
+        key = (agent, model_name)
+        cached = self._compiled.get(key)
+        if cached is not None:
+            return cached
+        provider, model_id = resolve_catalog(agent, model_name, self.models)
         models = self.models.get(provider, {})
         model = models.get(model_id) if isinstance(models, dict) else None
         if not isinstance(model, dict):
-            return {"amount": None, "reason": "model_not_priced", "model": model_id}
+            compiled = _CompiledModel(provider=provider, model_id=model_id, priced=False)
+            self._compiled[key] = compiled
+            return compiled
         try:
             base_cost = model["cost"]
-            cost = self._rates(base_cost, event)
+            if not isinstance(base_cost, dict):
+                raise TypeError("Invalid cost mapping")
+            has_cw = _has_cache_write_rate(base_cost)
+            base_table = _compile_rate_table(base_cost)
+            raw_tiers = base_cost.get("tiers")
+            if raw_tiers is None and base_cost.get("context_over_200k"):
+                raw_tiers = [
+                    {**base_cost["context_over_200k"], "tier": {"type": "context", "size": 200000}}
+                ]
+            has_tiers = bool(raw_tiers)
+            tier_error: str | None = None
+            compiled_tiers: list[tuple[int, _CompiledRateTable]] = []
+            if raw_tiers:
+                try:
+                    for item in raw_tiers:
+                        threshold = item["tier"]["size"]
+                        if (
+                            isinstance(threshold, bool)
+                            or not isinstance(threshold, int)
+                            or threshold < 0
+                        ):
+                            raise ValueError("invalid_price_tier")
+                    for tier in sorted(raw_tiers, key=lambda item: item["tier"]["size"]):
+                        selector = tier["tier"]
+                        if selector.get("type", "context") != "context":
+                            raise ValueError("unsupported_price_tier")
+                        compiled_tiers.append((selector["size"], _compile_rate_table(tier)))
+                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                    tier_error = _error_reason(exc)
+            compiled = _CompiledModel(
+                provider=provider,
+                model_id=model_id,
+                priced=True,
+                has_cache_write=has_cw,
+                base_table=base_table,
+                has_tiers=has_tiers,
+                tier_error=tier_error,
+                tiers=tuple(compiled_tiers),
+            )
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            compiled = _CompiledModel(
+                provider=provider,
+                model_id=model_id,
+                priced=True,
+                structure_error=_error_reason(exc),
+            )
+        self._compiled[key] = compiled
+        return compiled
+
+    def estimate(self, event: dict) -> dict:
+        agent = event["provider"]
+        compiled = self._compile_model(agent, event["model"])
+        provider, model_id = compiled.provider, compiled.model_id
+        if not compiled.priced:
+            return {"amount": None, "reason": "model_not_priced", "model": model_id}
+        if compiled.structure_error is not None:
+            return {"amount": None, "reason": compiled.structure_error, "model": model_id}
+        try:
+            assert compiled.base_table is not None
+            table = self._select_table(compiled, event)
             read, write = event.get("cache_read_tokens"), event.get("cache_write_tokens")
             if read is None:
                 raise ValueError("unknown_cache_usage")
             if write is None:
                 if (
-                    event.get("provider") == "claude"
+                    agent == "claude"
                     or provider in ANTHROPIC_TTL_PROVIDERS
-                    or _has_cache_write_rate(base_cost)
+                    or compiled.has_cache_write
                 ):
                     raise ValueError("unknown_cache_usage")
                 effective_write = 0
@@ -259,27 +367,29 @@ class Pricing:
             fresh = event["input_tokens"] - read - effective_write
             if fresh < 0:
                 raise ValueError("inconsistent_cache_usage")
-            parts = {
-                "fresh_input": fresh * rate(cost, "input") / MILLION,
-                "cache_read": read * rate(cost, "cache_read") / MILLION if read else Decimal(0),
-                "cache_write": self._writes(
-                    cost, event, effective_write, event["provider"], provider
-                ),
-            }
-            output_price = rate(cost, "output")
-            reasoning_price = rate(cost, "reasoning") if "reasoning" in cost else output_price
+            fresh_cost = fresh * table.get("input") / MILLION
+            read_cost = read * table.get("cache_read") / MILLION if read else Decimal(0)
+            write_cost = self._writes_compiled(table, event, effective_write, agent, provider)
+            output_price = table.get("output")
+            reasoning_price = table.get("reasoning") if table.has_reasoning else output_price
             if reasoning_price != output_price:
                 reasoning = event.get("reasoning_tokens")
                 if reasoning is None:
                     raise ValueError("unknown_reasoning_usage")
-                parts["output"] = (
+                output_cost = (
                     (event["output_tokens"] - reasoning) * output_price
                     + reasoning * reasoning_price
                 ) / MILLION
             else:
-                parts["output"] = event["output_tokens"] * output_price / MILLION
+                output_cost = event["output_tokens"] * output_price / MILLION
+            parts = {
+                "fresh_input": fresh_cost,
+                "cache_read": read_cost,
+                "cache_write": write_cost,
+                "output": output_cost,
+            }
             return {
-                "amount": sum(parts.values()),
+                "amount": fresh_cost + read_cost + write_cost + output_cost,
                 "components": parts,
                 "model": model_id,
                 "pricing_provider": provider,
@@ -289,32 +399,25 @@ class Pricing:
             return {"amount": None, "reason": reason, "model": model_id}
 
     @staticmethod
-    def _rates(base: dict, event: dict) -> dict:
-        tiers = base.get("tiers")
-        if tiers is None and base.get("context_over_200k"):
-            tiers = [{**base["context_over_200k"], "tier": {"type": "context", "size": 200000}}]
-        if not tiers:
-            return base
+    def _select_table(compiled: _CompiledModel, event: dict) -> _CompiledRateTable:
+        assert compiled.base_table is not None
+        if not compiled.has_tiers:
+            return compiled.base_table
         size = event.get("request_input_tokens")
         if size is None:
             raise ValueError("unknown_request_size_for_tier")
-        for item in tiers:
-            threshold = item["tier"]["size"]
-            if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:
-                raise ValueError("invalid_price_tier")
-        selected = base
-        for tier in sorted(tiers, key=lambda item: item["tier"]["size"]):
-            selector = tier["tier"]
-            if selector.get("type", "context") != "context":
-                raise ValueError("unsupported_price_tier")
-            if size > selector["size"]:
+        if compiled.tier_error is not None:
+            raise ValueError(compiled.tier_error)
+        selected = compiled.base_table
+        for threshold, tier_table in compiled.tiers:
+            if size > threshold:
                 # Tiers are full price tables; absent cache rates must remain unknown.
-                selected = tier
+                selected = tier_table
         return selected
 
     @staticmethod
-    def _writes(
-        cost: dict,
+    def _writes_compiled(
+        table: _CompiledRateTable,
         event: dict,
         write: int,
         agent: str | None,
@@ -327,7 +430,7 @@ class Pricing:
         if agent != "claude" or (
             pricing_provider is not None and pricing_provider not in ANTHROPIC_TTL_PROVIDERS
         ):
-            return write * rate(cost, "cache_write") / MILLION
+            return write * table.get("cache_write") / MILLION
         short = event.get("cache_write_5m_tokens")
         long = event.get("cache_write_1h_tokens")
         if short is None or long is None:
@@ -335,8 +438,8 @@ class Pricing:
         if short + long != write:
             raise ValueError("inconsistent_cache_write_ttl")
         # models.dev cache_write describes 5m writes. Anthropic documents 1h at 2x input.
-        short_cost = short * rate(cost, "cache_write") if short else Decimal(0)
-        long_cost = long * rate(cost, "input") * 2 if long else Decimal(0)
+        short_cost = short * table.get("cache_write") if short else Decimal(0)
+        long_cost = long * table.get("input") * 2 if long else Decimal(0)
         return (short_cost + long_cost) / MILLION
 
 
