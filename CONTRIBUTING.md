@@ -68,17 +68,26 @@ logs and unrelated snapshots, including on simulated failure.
 
 ### Nightly prerelease
 
-The Nightly workflow checks `main` at 00:00 UTC. It skips an already published
-build of the same commit. To rebuild or repair a partial upload, run
+The Nightly workflow checks `main` at 00:00 UTC. It skips when both the
+published `nightly` release and its annotated Git tag already match `main`. To
+rebuild or repair a partial upload, run
 `gh workflow run nightly.yml --ref main -f force=true`. Before modifying the
 release, the publish job rechecks `main`. A rerun keeps its original commit and
 run number; dispatch a new run to build the latest `main`. For the same commit,
 a higher **published** run number supersedes any older run, regardless of start
-order. Publication uploads the new distributions, switches the release notes,
-then updates the tag and cleans up older assets. If either final step fails,
-retry the failed job: it reuses the advertised assets without overwriting them.
-Install the wheel named by the published version, not every attached wheel.
-The next scheduled run repairs an interrupted publication.
+order. Publication uploads and verifies the new distributions on a temporary
+staging draft (cleaned up on failure via an `EXIT` trap and a stale-draft sweep),
+creates a publication-stamped annotated `nightly` tag object, deletes the
+previous `nightly` release, advances `refs/tags/nightly`, and publishes the
+draft; deleting the old release before publishing the replacement leaves a brief
+non-atomic swap window where `nightly` is absent until publication completes.
+Recreating the release refreshes `published_at`, while the annotated tag
+updates the tag and `Source code` entry dates shown on the GitHub release page
+(file timestamps inside GitHub's generated source archives still reflect the
+commit time). Retrying a publish job preserves an already matching release and
+annotated tag, repairs a missing or outdated tag, or re-stages from the verified
+build artifacts (including if interrupted during the swap window); the next
+scheduled run also repairs an interrupted publication.
 The rolling `nightly` release is for testing; it does not
 publish to PyPI or change the base version in `pyproject.toml`.
 
