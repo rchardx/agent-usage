@@ -156,12 +156,23 @@ def render_quotas(report: dict, console: Console, zone):
     console.rule(Text(f"Account allowances · {zone}", style="bold"), align="left")
     console.print()
     panels = [account_panel(account, zone) for account in report["accounts"]]
-    if console.width >= 140 and len(panels) == 2:
-        layout = Table.grid(expand=True, padding=(0, 1))
-        layout.add_column(ratio=1)
-        layout.add_column(ratio=1)
-        layout.add_row(*panels)
-        console.print(layout)
+    columns = (
+        3
+        if console.width >= 210 and len(panels) >= 3
+        else 2
+        if console.width >= 140 and len(panels) >= 2
+        else 1
+    )
+    if columns > 1:
+        for offset in range(0, len(panels), columns):
+            row = panels[offset : offset + columns]
+            layout = Table.grid(expand=True, padding=(0, 1))
+            for _ in range(columns):
+                layout.add_column(ratio=1)
+            layout.add_row(*row, *([""] * (columns - len(row))))
+            console.print(layout)
+            if offset + columns < len(panels):
+                console.print()
     else:
         for panel in panels:
             console.print(panel)

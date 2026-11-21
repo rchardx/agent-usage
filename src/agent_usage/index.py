@@ -12,7 +12,15 @@ from tempfile import TemporaryDirectory
 
 from .cache import REBUILD_HINT, CacheError, index_lock
 from .models import UsageEvent
-from .parsers import METRICS, PARSER_VERSION, parse_claude, parse_codex, parse_omp, parse_pi
+from .parsers import (
+    METRICS,
+    PARSER_VERSION,
+    parse_antigravity_db,
+    parse_claude,
+    parse_codex,
+    parse_omp,
+    parse_pi,
+)
 from .paths import Paths
 
 SCHEMA_VERSION = 2
@@ -123,12 +131,18 @@ class Index:
         total_issues: Counter = Counter()
         for provider in providers:
             files = paths.files(provider)
-            root = getattr(paths, provider)
-            summary = {"files": len(files), "root_exists": root.is_dir(), "issues": {}}
+            summary = {
+                "files": len(files),
+                "root_exists": paths.root_exists(provider),
+                "issues": {},
+            }
             issues: Counter = Counter()
             for path in files:
                 try:
-                    updated, read, found = self._sync_file(path, provider)
+                    sync_one = (
+                        self._sync_sqlite_file if provider == "antigravity" else self._sync_file
+                    )
+                    updated, read, found = sync_one(path, provider)
                     result["files_updated"] += updated
                     result["bytes_read"] += read
                     issues.update(found)
@@ -142,26 +156,82 @@ class Index:
         result["issues"] = dict(total_issues)
         return result
 
+    @staticmethod
+    def _load_checkpoint(saved) -> tuple[dict, dict]:
+        if saved is None:
+            return {}, {}
+        try:
+            saved_state, saved_issues = json.loads(saved[4]), json.loads(saved[5])
+            if (
+                not isinstance(saved_state, dict)
+                or not isinstance(saved_issues, dict)
+                or any(type(n) is not int or n < 0 for n in saved_issues.values())
+                or type(saved[1]) is not int
+                or saved[1] < 0
+            ):
+                raise ValueError("Invalid checkpoint")
+            return saved_state, saved_issues
+        except (ValueError, TypeError) as exc:
+            raise CacheError(f"Usage index checkpoint is damaged. {REBUILD_HINT}") from exc
+
+    @staticmethod
+    def _sqlite_anchor(handle, path: Path, size: int, mtime_ns: int) -> tuple[str, int]:
+        handle.seek(0)
+        header = handle.read(100)
+        try:
+            wal_stat = Path(f"{path}-wal").stat()
+            wal_size, wal_mtime = wal_stat.st_size, wal_stat.st_mtime_ns
+        except OSError:
+            wal_size, wal_mtime = 0, 0
+        payload = header + f"|{size}:{mtime_ns}:{wal_size}:{wal_mtime}".encode()
+        return hashlib.sha256(payload).hexdigest(), wal_size
+
+    def _sync_sqlite_file(self, path: Path, provider: str) -> tuple[int, int, dict]:
+        filename = str(path)
+        saved = self.db.execute(
+            "SELECT identity,offset,mtime_ns,anchor,state,issues FROM files WHERE path=?",
+            (filename,),
+        ).fetchone()
+        saved_state, saved_issues = self._load_checkpoint(saved)
+        with path.open("rb") as handle, self.db:
+            stat = os.fstat(handle.fileno())
+            identity = f"{stat.st_dev}:{stat.st_ino}"
+            anchor, wal_size = self._sqlite_anchor(handle, path, stat.st_size, stat.st_mtime_ns)
+            if (
+                saved is not None
+                and saved_state.get("parser_version") == PARSER_VERSION
+                and saved[0] == identity
+                and saved[1] == stat.st_size
+                and saved[2] == stat.st_mtime_ns
+                and saved[3] == anchor
+            ):
+                return 0, 0, dict(saved_issues)
+            events, issues = parse_antigravity_db(path)
+            self.db.execute("DELETE FROM events WHERE path=?", (filename,))
+            for event in events:
+                self.add(filename, event)
+            self.db.execute(
+                "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    filename,
+                    provider,
+                    identity,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    anchor,
+                    json.dumps({"parser_version": PARSER_VERSION}),
+                    json.dumps(dict(issues)),
+                ),
+            )
+            return 1, stat.st_size + wal_size, dict(issues)
+
     def _sync_file(self, path: Path, provider: str) -> tuple[int, int, dict]:
         filename = str(path)
         saved = self.db.execute(
             "SELECT identity,offset,mtime_ns,anchor,state,issues FROM files WHERE path=?",
             (filename,),
         ).fetchone()
-        saved_state, saved_issues = {}, {}
-        if saved is not None:
-            try:
-                saved_state, saved_issues = json.loads(saved[4]), json.loads(saved[5])
-                if (
-                    not isinstance(saved_state, dict)
-                    or not isinstance(saved_issues, dict)
-                    or any(type(n) is not int or n < 0 for n in saved_issues.values())
-                    or type(saved[1]) is not int
-                    or saved[1] < 0
-                ):
-                    raise ValueError("Invalid checkpoint")
-            except (ValueError, TypeError) as exc:
-                raise CacheError(f"Usage index checkpoint is damaged. {REBUILD_HINT}") from exc
+        saved_state, saved_issues = self._load_checkpoint(saved)
         with path.open("rb") as handle, self.db:
             stat = os.fstat(handle.fileno())
             identity = f"{stat.st_dev}:{stat.st_ino}"

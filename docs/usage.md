@@ -10,7 +10,7 @@ For command-line help, run `agent-usage --help` or
 
 ```bash
 agent-usage                                 # Account allowances + last 30 days, by day
-agent-usage quota                           # Codex/Claude windows, resets, credits
+agent-usage quota                           # Codex/Claude/Antigravity windows, resets, credits
 agent-usage --refresh quota                 # Bypass the 120-second account cache
 agent-usage --offline                       # Cached allowances + local tokens; no network
 agent-usage tokens --since 7d               # Rolling seven-day interval
@@ -30,7 +30,9 @@ agent-usage doctor                          # Offline discovery and parser diagn
 Global options (`--provider`, `--timezone`, `--offline`, `--refresh`, `--no-cost`, `--timeout`,
 and path overrides) precede the subcommand. `tokens`, `quota`, and `doctor` also
 accept their own `--json` flag. `--until` is exclusive; dates without an offset
-use the reporting timezone, which defaults to the system timezone.
+use the reporting timezone, which defaults to the system timezone. Live
+Antigravity quota queries require `agy` >= 1.5.14 on `PATH` (see
+[Providers and account data](providers.md#requirements-and-compatibility)).
 
 ## Dates and reporting timezone
 
@@ -86,7 +88,7 @@ agent-usage doctor --rebuild-index
 agent-usage --cache-dir /path/to/cache doctor --rebuild-index --json
 ```
 
-Repeat any `--codex-home`, `--claude-home`, `--pi-home` and `--omp-home` overrides
+Repeat any `--codex-home`, `--claude-home`, `--antigravity-home`, `--pi-home` and `--omp-home` overrides
 used for your reports. Rebuilding requires `--provider all` (the default): it
 replaces the shared index, not just a single provider's rows. It cannot recover
 missing/deleted logs, and an empty set of source directories produces an empty
@@ -130,6 +132,9 @@ Default inputs:
   `~/.codex` as the home directory.
 - Claude: `$CLAUDE_CONFIG_DIR/projects`, defaulting to `~/.claude` as the home
   directory, including nested subagent logs.
+- Antigravity: `conversations/*.db` across `~/.gemini/antigravity`,
+  `~/.gemini/antigravity-cli`, and `~/.gemini/antigravity-ide` by default, or
+  `conversations/*.db` under a single directory via `--antigravity-home`.
 - pi: `$PI_CODING_AGENT_DIR/sessions`, defaulting to `~/.pi/agent`. Only
   timestamp-named session transcripts are indexed.
 - omp: `~/.omp/agent/sessions`, with the same transcript naming rule.
@@ -138,11 +143,13 @@ Default inputs:
 
 ```bash
 agent-usage --codex-home /path/to/.codex --claude-home /path/to/.claude tokens --all
+agent-usage --antigravity-home /path/to/antigravity-cli tokens --all
 agent-usage --pi-home /path/to/agent --omp-home /path/to/agent tokens --all
 ```
 
 The scope is the current user and selected environment. WSL does not automatically
-scan the Windows user's data. Each provider currently accepts one home directory.
+scan the Windows user's data. Antigravity aggregates its local client roots unless
+overridden; other providers accept one home directory.
 
 The tool sends no prompts, redeems no resets, purchases no credits, and does not
 write client configuration. Credentials stay in memory for the direct Claude

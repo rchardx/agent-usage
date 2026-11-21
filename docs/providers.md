@@ -2,9 +2,9 @@
 
 [Overview](../README.md) · [Usage](usage.md) · [Accounting](accounting.md) · [Providers](providers.md)
 
-Codex and Claude Code contribute both account allowances and local token history.
-pi and omp are multi-provider harnesses, not subscription accounts: they
-contribute token history only and are excluded from quota reports.
+Codex, Claude Code, and Antigravity contribute both account allowances and local
+token history. pi and omp are multi-provider harnesses, not subscription accounts:
+they contribute token history only and are excluded from quota reports.
 
 Account allowances and local token history have separate scopes. Other devices
 can affect account limits, while token reports only count logs available in the
@@ -14,9 +14,12 @@ and [Accounting](accounting.md) for record normalization.
 ## Requirements and compatibility
 
 Live adapters were verified on Linux/WSL with Codex CLI 0.160.0, Claude Code
-2.1.289, pi 1.5.2, and omp 18.20.2. Other versions may expose different fields.
-Codex must be on `PATH` for live account queries. Local token reports work
-without any of the CLIs installed.
+2.1.289, Antigravity CLI (`agy`) 1.5.14, pi 1.5.2, and omp 18.20.2. Other versions
+may expose different fields.
+Codex and `agy` (>= 1.5.14; older CLI builds that do not handle `/usage` or
+`/credits` directly in `--print` mode could invoke a model turn) must be on
+`PATH` for their live account queries. Local token reports work without any of
+the CLIs installed.
 
 CI runs synthetic tests on Linux with Python 3.11 and 3.14, and on macOS and
 Windows with Python 3.14. These checks do not validate live account adapters on
@@ -41,6 +44,17 @@ those platforms.
   `seven_day_opus`, and the unified `session` / `weekly_all` equivalents.
   Other fields such as `iguana_necktie` are ignored, even if they contain
   utilization or reset values. Extra usage and spend balances remain supported.
+- **Antigravity:** the installed `agy` CLI's non-interactive `/usage` and
+  `/credits` commands (`--output-format json`), verified on `agy` 1.5.14 to
+  answer directly in the CLI (`conversation_id: ""`, `num_turns: 0`,
+  `usage.total_tokens: 0`) without running a model turn or creating a
+  conversation; responses with non-zero turns or tokens are rejected. When
+  `settings.json` exists in the configured Antigravity directory, it is passed
+  via `--settings`; OAuth login state itself resides in the OS keyring.
+  Recognized quota buckets are `gemini-5h`, `gemini-weekly`, `3p-5h`, and
+  `3p-weekly`, converted from `remaining_fraction` to `used_percent`. Remaining
+  AI credits are reported under `ai_credits`; malformed or unavailable credit
+  responses emit a warning without discarding valid quota windows.
 - **Credits:** provider balances, limits, usage, enabled status, and unlimited
   status remain separate. Numeric values are retained in provider units with
   `provider_units_unverified` until their scale is verified. No currency conversion
@@ -66,9 +80,10 @@ loop when a provider rate-limits queries.
 
 Quota caches are tied to the credentials file's location and metadata to avoid
 reusing a snapshot after an account switch. Without file-backed credentials,
-account caching is disabled. Claude OS-keychain credentials and automatic OAuth
-refresh are not implemented; refresh an expired login using Claude Code. Codex
-manages its own authentication through its installed App Server.
+account caching is disabled (including Antigravity, which stores OAuth sessions
+in the OS keyring). Claude OS-keychain credentials and automatic OAuth refresh
+are not implemented; refresh an expired login using Claude Code. Codex and
+Antigravity manage their own authentication through `codex` and `agy`.
 
 ### Non-subscription and API-key modes
 
@@ -76,10 +91,14 @@ Standard API keys, custom gateways, and cloud-provider credentials (such as
 Google Cloud Vertex AI, Amazon Bedrock, or Anthropic Foundry) do not have
 subscription quota windows, and inference keys do not expose billing balances.
 When Codex (`OPENAI_API_KEY`, `CODEX_API_KEY`, `auth.json` API keys, or a
-non-OpenAI `model_provider` in `config.toml`) or Claude Code
+non-OpenAI `model_provider` in `config.toml`), Claude Code
 (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `settings.json` environment or
 `apiKeyHelper`, or `CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_BEDROCK` /
-`CLAUDE_CODE_USE_FOUNDRY`) uses non-subscription authentication:
+`CLAUDE_CODE_USE_FOUNDRY`), or Antigravity (`modelProvider: "gemini"` with
+`GEMINI_API_KEY` and optional `GOOGLE_GEMINI_BASE_URL`, `gcp` project settings,
+`auth.type` `gemini-api-key` / `agent-platform`, `AGY_ADC_AUTH`,
+`GOOGLE_GENAI_USE_VERTEXAI`, or `enableAdc`) uses non-subscription
+authentication:
 
 - Account status remains `unavailable` with `error: null`, the detected
   `auth_mode` (`apiKey`, `api_key`, `customGateway`, `gcp`, `vertex`,

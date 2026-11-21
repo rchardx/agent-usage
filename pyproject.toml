@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-usage"
 version = "0.1.0"
-description = "Local-first allowances and token usage for Codex, Claude Code, pi, and omp"
+description = "Local-first allowances and token usage for Codex, Claude Code, Antigravity, pi, and omp"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

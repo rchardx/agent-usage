@@ -107,7 +107,7 @@ def test_timeout_boundaries_and_types_reach_settings(paths, monkeypatch, timeout
     assert settings.json is True
     assert settings.offline is False and settings.refresh is False
     assert settings.costs is True
-    assert settings.providers == ["codex", "claude", "pi", "omp"]
+    assert settings.providers == ["codex", "claude", "antigravity", "pi", "omp"]
 
 
 def test_optional_paths_boolean_flags_and_enum_values(paths, monkeypatch, tmp_path):
@@ -157,6 +157,7 @@ def test_offline_json_is_clean_and_never_fetches(paths, monkeypatch, command, gl
 
     monkeypatch.setattr("agent_usage.reports.fetch_codex", forbidden)
     monkeypatch.setattr("agent_usage.reports.fetch_claude", forbidden)
+    monkeypatch.setattr("agent_usage.reports.fetch_antigravity", forbidden)
     monkeypatch.setattr("urllib.request.urlopen", forbidden)
     monkeypatch.setattr("agent_usage.cli.shutil.which", lambda _: None)
     # Exercise the real offline price loader, not conftest's default CLI stub.

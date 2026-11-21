@@ -1,10 +1,10 @@
 # agent-usage
 
 A local-first CLI for account allowances, token usage and API-equivalent cost
-estimates across Codex, Claude Code, pi and omp.
+estimates across Codex, Claude Code, Antigravity, pi and omp.
 
-- **Account allowances:** quota windows, reset times and credits for Codex and
-  Claude Code. pi and omp contribute local token history only.
+- **Account allowances:** quota windows, reset times and credits for Codex,
+  Claude Code and Antigravity. pi and omp contribute local token history only.
 - **Token reports:** daily usage and breakdowns by agent, model, project or session.
 - **Cost estimates:** per-request estimates using [models.dev](https://models.dev/)
   prices, with explicit explanations for unpriced records.
@@ -40,8 +40,8 @@ If the command is not found, ensure `uv tool dir --bin` is on `PATH`;
 
 Local token reports read existing agent logs and do not require the agent CLIs to
 be installed. Live account queries need existing agent authentication, and Codex
-queries also require `codex` on `PATH`. See [provider requirements](docs/providers.md)
-for supported versions and limitations.
+or Antigravity queries also require `codex` or `agy` (>= 1.5.14) on `PATH`. See
+[provider requirements](docs/providers.md) for supported versions and limitations.
 
 ## Quick start
 

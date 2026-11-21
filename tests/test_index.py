@@ -1,8 +1,24 @@
 import json
+import os
+import sqlite3
+from pathlib import Path
 
-from conftest import agent_session, agent_usage, claude_usage, codex_meta, codex_usage, write_rows
+import pytest
+from conftest import (
+    agent_session,
+    agent_usage,
+    antigravity_gen_blob,
+    antigravity_step_blob,
+    antigravity_usage_blob,
+    claude_usage,
+    codex_meta,
+    codex_usage,
+    write_antigravity_db,
+    write_rows,
+)
 
 from agent_usage.index import Index
+from agent_usage.paths import Paths
 
 
 def test_codex_deltas_duplicate_snapshots_and_copied_logs(paths):
@@ -433,3 +449,399 @@ def test_parser_v3_checkpoint_rebuilds_for_v4_model_namespaces(paths):
         events = index.events(paths, ["pi"])
     assert coverage["files_updated"] == 1
     assert events[0]["model"] == "openrouter/google/gemini-2.5-pro"
+
+
+def test_antigravity_sqlite_reads_gen_metadata_step_timestamps_and_keeps_missing_unknown(paths):
+    db_path = paths.antigravity / "conversations/session-alpha.db"
+    primary = antigravity_usage_blob(
+        fresh_input=40,
+        cache_read=60,
+        cache_write=5,
+        total_output=12,
+        visible_output=8,
+        reasoning=4,
+        response_id="resp-shared",
+    )
+    distinct_retry = antigravity_usage_blob(
+        fresh_input=10,
+        cache_read=0,
+        cache_write=0,
+        total_output=3,
+        visible_output=3,
+        reasoning=0,
+        response_id="resp-retry",
+    )
+    missing_model_usage = antigravity_usage_blob(
+        fresh_input=15,
+        cache_read=25,
+        cache_write=0,
+        total_output=6,
+        visible_output=4,
+        reasoning=2,
+        response_id=None,
+    )
+    undated_usage = antigravity_usage_blob(
+        fresh_input=9,
+        cache_read=0,
+        cache_write=0,
+        total_output=2,
+        visible_output=2,
+        reasoning=0,
+        response_id="resp-undated",
+    )
+    write_antigravity_db(
+        db_path,
+        generations=[
+            (
+                0,
+                antigravity_gen_blob(
+                    model="gemini-3.8-flash",
+                    display_model="Gemini 3.8 Flash (High)",
+                    usage=primary,
+                    # Primary mirror in retry_infos must be dropped; distinct retry is retained.
+                    retries=[primary, distinct_retry],
+                    timestamp=None,
+                    step_indices=[1],
+                ),
+            ),
+            (
+                1,
+                antigravity_gen_blob(
+                    model=None,
+                    usage=missing_model_usage,
+                    timestamp=(1_790_812_920, 0),
+                    step_indices=[2],
+                ),
+            ),
+            (
+                2,
+                antigravity_gen_blob(
+                    model="claude-opus-5-5-medium",
+                    display_model="Claude Opus 5.5 (Medium)",
+                    usage=undated_usage,
+                    timestamp=None,
+                    step_indices=[99],
+                ),
+            ),
+        ],
+        steps=[
+            (
+                1,
+                antigravity_step_blob(
+                    model=None,
+                    usage=primary,
+                    timestamp=(1_790_812_860, 0),
+                ),
+            ),
+        ],
+        # Trajectory creation timestamp must NOT be guessed onto undated generation 2.
+        trajectories=[(1_790_812_800, 0)],
+    )
+
+    # Non-conversation summary DB and empty DBs must be ignored cleanly.
+    with sqlite3.connect(paths.antigravity / "conversations/summary.db") as summary:
+        summary.execute("CREATE TABLE summaries (id TEXT)")
+    summary.close()
+    (paths.antigravity / "conversations/empty.db").write_bytes(b"")
+
+    with Index(paths.cache) as index:
+        first_cov = index.sync(paths, ["antigravity"])
+        events = sorted(
+            index.events(paths, ["antigravity"]), key=lambda e: (e["timestamp"], e["input_tokens"])
+        )
+        second_cov = index.sync(paths, ["antigravity"])
+
+    assert first_cov["files"] == 3
+    assert first_cov["issues"] == {"missing_timestamp": 1}
+    assert second_cov["bytes_read"] == 0
+    assert len(events) == 3
+    assert b"PRIVATE-CONVERSATION-SENTINEL" not in (paths.cache / "index.sqlite3").read_bytes()
+
+    by_input = {e["input_tokens"]: e for e in events}
+    assert by_input[105]["model"] == "gemini-3.8-flash-high"
+    assert by_input[105]["output_tokens"] == 12
+    assert by_input[105]["cache_read_tokens"] == 60
+    assert by_input[105]["cache_write_tokens"] == 5
+    assert by_input[105]["reasoning_tokens"] == 4
+    assert by_input[105]["request_input_tokens"] == 105
+    assert by_input[105]["session"] == "session-alpha"
+    assert by_input[105]["project"] == "unknown"
+    assert by_input[105]["timestamp"] == "2026-10-01T00:01:00+00:00"
+
+    # Missing model stays "unknown" rather than inheriting another row's model.
+    assert by_input[40]["model"] == "unknown"
+    assert by_input[10]["output_tokens"] == 3
+
+
+def test_antigravity_multi_root_deduplication_and_in_place_sqlite_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    discovered = Paths.discover(
+        codex=tmp_path / "codex",
+        claude=tmp_path / "claude",
+        pi=tmp_path / "pi",
+        omp=tmp_path / "omp",
+        cache=tmp_path / "cache",
+    )
+
+    cli_root = tmp_path / ".gemini/antigravity-cli"
+    app_root = tmp_path / ".gemini/antigravity"
+    ide_root = tmp_path / ".gemini/antigravity-ide"
+    usage_a = antigravity_usage_blob(fresh_input=50, cache_read=10, cache_write=0, response_id="r1")
+    write_antigravity_db(
+        cli_root / "conversations/s1.db",
+        generations=[(0, antigravity_gen_blob(model="models/gemini-2.5-pro", usage=usage_a))],
+    )
+    # Identical copy across App and CLI roots deduplicates; root-level DBs are ignored.
+    write_antigravity_db(
+        app_root / "conversations/s1.db",
+        generations=[(0, antigravity_gen_blob(model="models/gemini-2.5-pro", usage=usage_a))],
+    )
+    write_antigravity_db(
+        app_root / "unrelated_root_level.db",
+        generations=[(0, antigravity_gen_blob(model="gemini-2.5-pro", usage=usage_a))],
+    )
+    usage_b = antigravity_usage_blob(fresh_input=30, cache_read=0, cache_write=0, response_id="r2")
+    write_antigravity_db(
+        ide_root / "conversations/s2.db",
+        generations=[(0, antigravity_gen_blob(model=None, model_id=246, usage=usage_b))],
+    )
+
+    with Index(discovered.cache) as index:
+        index.sync(discovered, ["antigravity"])
+        events = index.events(discovered, ["antigravity"])
+        assert len(events) == 2
+        assert {e["model"] for e in events} == {"gemini-2.5-pro"}
+
+        # In-place SQLite insert into s2.db must invalidate checkpoint and index the new row.
+        usage_c = antigravity_usage_blob(
+            fresh_input=70, cache_read=0, cache_write=0, response_id="r3"
+        )
+        with sqlite3.connect(ide_root / "conversations/s2.db") as conn:
+            conn.execute(
+                "INSERT INTO gen_metadata (idx, data) VALUES (?, ?)",
+                (1, antigravity_gen_blob(model="claude-opus-5-5-medium", usage=usage_c)),
+            )
+        conn.close()
+        updated_cov = index.sync(discovered, ["antigravity"])
+        assert updated_cov["files_updated"] == 1
+        assert len(index.events(discovered, ["antigravity"])) == 3
+
+
+def test_antigravity_corrupt_and_unsupported_databases_report_issues_cleanly(paths):
+    (paths.antigravity / "conversations/corrupt.db").write_bytes(b"not a sqlite file")
+    with sqlite3.connect(paths.antigravity / "conversations/steps_only.db") as steps_only:
+        steps_only.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB)")
+        steps_only.execute("INSERT INTO steps VALUES (0, X'0801')")
+    steps_only.close()
+
+    valid_db = paths.antigravity / "conversations/mixed.db"
+    write_antigravity_db(
+        valid_db,
+        generations=[
+            (0, antigravity_gen_blob(usage=antigravity_usage_blob(response_id="ok"))),
+            (1, b"\xff\xff\xff"),
+            (
+                2,
+                antigravity_gen_blob(
+                    usage=antigravity_usage_blob(response_id="undated"),
+                    timestamp=None,
+                ),
+            ),
+        ],
+    )
+
+    with Index(paths.cache) as index:
+        cov = index.sync(paths, ["antigravity"])
+        events = index.events(paths, ["antigravity"])
+
+    assert cov["issues"] == {
+        "antigravity_unsupported_db_schema": 1,
+        "invalid_record": 2,
+        "missing_timestamp": 1,
+    }
+    assert len(events) == 1
+
+
+def test_antigravity_retry_with_distinct_model_id_uses_retry_model(paths):
+    db_path = paths.antigravity / "conversations/retry-models.db"
+    primary = antigravity_usage_blob(
+        fresh_input=80, cache_read=0, cache_write=0, model_id=246, response_id="resp-primary"
+    )
+    same_id_retry = antigravity_usage_blob(
+        fresh_input=20, cache_read=0, cache_write=0, model_id=246, response_id="resp-same-model"
+    )
+    fallback_flash_retry = antigravity_usage_blob(
+        fresh_input=30, cache_read=0, cache_write=0, model_id=312, response_id="resp-flash-retry"
+    )
+    unknown_id_retry = antigravity_usage_blob(
+        fresh_input=15, cache_read=0, cache_write=0, model_id=9999, response_id="resp-unknown-id"
+    )
+    text_only_primary = antigravity_usage_blob(
+        fresh_input=50, cache_read=0, cache_write=0, model_id=None, response_id="resp-text-primary"
+    )
+    text_only_flash_retry = antigravity_usage_blob(
+        fresh_input=25, cache_read=0, cache_write=0, model_id=312, response_id="resp-text-flash"
+    )
+    write_antigravity_db(
+        db_path,
+        generations=[
+            (
+                0,
+                antigravity_gen_blob(
+                    model="gemini-2.5-pro",
+                    display_model="Gemini 2.5 Pro (High)",
+                    model_id=246,
+                    usage=primary,
+                    retries=[same_id_retry, fallback_flash_retry, unknown_id_retry],
+                ),
+            ),
+            (
+                1,
+                antigravity_gen_blob(
+                    model="gemini-2.5-pro",
+                    display_model="Gemini 2.5 Pro (High)",
+                    model_id=None,
+                    usage=text_only_primary,
+                    retries=[text_only_flash_retry],
+                ),
+            ),
+        ],
+    )
+
+    with Index(paths.cache) as index:
+        assert index.sync(paths, ["antigravity"])["issues"] == {}
+        by_input = {e["input_tokens"]: e["model"] for e in index.events(paths, ["antigravity"])}
+
+    assert by_input == {
+        80: "gemini-2.5-pro-high",
+        20: "gemini-2.5-pro-high",
+        30: "gemini-2.5-flash",
+        15: "unknown",
+        50: "gemini-2.5-pro-high",
+        25: "gemini-2.5-flash",
+    }
+
+
+def test_antigravity_wal_databases_use_consistent_snapshot_and_preserve_index_without_shm(paths):
+    conv_dir = paths.antigravity / "conversations"
+    clean_wal_db = conv_dir / "clean-wal.db"
+    with sqlite3.connect(clean_wal_db) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+        conn.execute(
+            "INSERT INTO gen_metadata VALUES (0, ?)",
+            (antigravity_gen_blob(usage=antigravity_usage_blob(response_id="clean-1")),),
+        )
+    conn.close()
+    assert sorted(p.name for p in conv_dir.iterdir()) == ["clean-wal.db"]
+
+    with Index(paths.cache) as index:
+        assert index.sync(paths, ["antigravity"])["issues"] == {}
+        assert len(index.events(paths, ["antigravity"])) == 1
+        # Scanning a cleanly closed WAL database must not create -wal or -shm in source dir.
+        assert sorted(p.name for p in conv_dir.iterdir()) == ["clean-wal.db"]
+
+        # Active WAL session with uncheckpointed frames uses SQLite WAL read snapshot
+        # without creating extra files or mutating .db / -wal bytes.
+        writer = sqlite3.connect(clean_wal_db)
+        try:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute(
+                "INSERT INTO gen_metadata VALUES (1, ?)",
+                (
+                    antigravity_gen_blob(
+                        usage=antigravity_usage_blob(fresh_input=45, response_id="active-wal-2")
+                    ),
+                ),
+            )
+            writer.commit()
+            wal_path = Path(f"{clean_wal_db}-wal")
+            assert wal_path.stat().st_size > 0
+            before_names = sorted(p.name for p in conv_dir.iterdir())
+            before_db = clean_wal_db.read_bytes()
+            before_wal = wal_path.read_bytes()
+
+            active_cov = index.sync(paths, ["antigravity"])
+            assert active_cov["issues"] == {}
+            assert active_cov["files_updated"] == 1
+            assert len(index.events(paths, ["antigravity"])) == 2
+            assert sorted(p.name for p in conv_dir.iterdir()) == before_names
+            assert clean_wal_db.read_bytes() == before_db
+            assert wal_path.read_bytes() == before_wal
+
+            # Write a 3rd row, save -wal bytes, close cleanly, then plant an orphaned -wal
+            # without -shm: sync must preserve the 2 previously indexed events rather than
+            # creating -shm in source dir or overwriting the index with partial data.
+            writer.execute(
+                "INSERT INTO gen_metadata VALUES (2, ?)",
+                (
+                    antigravity_gen_blob(
+                        usage=antigravity_usage_blob(fresh_input=65, response_id="orphan-wal-3")
+                    ),
+                ),
+            )
+            writer.commit()
+            orphan_wal_bytes = wal_path.read_bytes()
+        finally:
+            writer.close()
+
+        Path(f"{clean_wal_db}-wal").write_bytes(orphan_wal_bytes)
+        assert sorted(p.name for p in conv_dir.iterdir()) == ["clean-wal.db", "clean-wal.db-wal"]
+        orphan_cov = index.sync(paths, ["antigravity"])
+        assert orphan_cov["issues"] == {"unreadable_file": 1}
+        assert sorted(p.name for p in conv_dir.iterdir()) == ["clean-wal.db", "clean-wal.db-wal"]
+        assert len(index.events(paths, ["antigravity"])) == 2
+
+        # Once a client recovers the WAL cleanly, the next sync indexes all 3 rows.
+        Path(f"{clean_wal_db}-wal").unlink()
+        recovered = index.sync(paths, ["antigravity"])
+        assert recovered["issues"] == {}
+        assert len(index.events(paths, ["antigravity"])) == 3
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX non-root file permissions required",
+)
+def test_antigravity_unreadable_wal_or_db_preserves_index_and_retries_after_chmod(paths):
+    conv_dir = paths.antigravity / "conversations"
+    db_path = conv_dir / "wal-session.db"
+    writer = sqlite3.connect(db_path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+        writer.execute(
+            "INSERT INTO gen_metadata VALUES (0, ?)",
+            (antigravity_gen_blob(usage=antigravity_usage_blob(response_id="r1")),),
+        )
+        writer.commit()
+
+        with Index(paths.cache) as index:
+            assert index.sync(paths, ["antigravity"])["issues"] == {}
+            assert len(index.events(paths, ["antigravity"])) == 1
+
+            writer.execute(
+                "INSERT INTO gen_metadata VALUES (1, ?)",
+                (antigravity_gen_blob(usage=antigravity_usage_blob(response_id="r2")),),
+            )
+            writer.commit()
+            wal_path = Path(f"{db_path}-wal")
+            wal_path.chmod(0o000)
+            try:
+                failed_cov = index.sync(paths, ["antigravity"])
+                assert failed_cov["issues"] == {"unreadable_file": 1}
+                # Previously indexed event is preserved rather than wiped to zero.
+                assert len(index.events(paths, ["antigravity"])) == 1
+            finally:
+                wal_path.chmod(0o644)
+
+            # Restoring WAL read permission without new writes retries and indexes both rows.
+            recovered_cov = index.sync(paths, ["antigravity"])
+            assert recovered_cov["issues"] == {}
+            assert recovered_cov["files_updated"] == 1
+            assert len(index.events(paths, ["antigravity"])) == 2
+    finally:
+        writer.close()

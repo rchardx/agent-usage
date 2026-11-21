@@ -17,14 +17,18 @@ from .cache import CacheError, cache_error_message
 from .index import Index, rebuild_index
 from .paths import Paths
 from .pricing import load_pricing
-from .providers import claude_auth_inspection, codex_auth_inspection
+from .providers import (
+    antigravity_auth_inspection,
+    claude_auth_inspection,
+    codex_auth_inspection,
+)
 from .render import render_quotas, render_tokens
 from .reports import ACCOUNT_PROVIDERS, envelope, period, quotas, summarize
 
 app = typer.Typer(
     no_args_is_help=False,
     pretty_exceptions_show_locals=False,
-    help="Codex, Claude Code, pi, and omp allowances and local token usage.",
+    help="Codex, Claude Code, Antigravity, pi, and omp allowances and local token usage.",
 )
 
 
@@ -32,11 +36,13 @@ class Provider(StrEnum):
     all = "all"
     codex = "codex"
     claude = "claude"
+    antigravity = "antigravity"
     pi = "pi"
     omp = "omp"
 
 
-ALL_PROVIDERS = ("codex", "claude", "pi", "omp")
+ALL_PROVIDERS = ("codex", "claude", "antigravity", "pi", "omp")
+EXECUTABLES = {"antigravity": "agy"}
 
 
 class Group(StrEnum):
@@ -160,6 +166,7 @@ def main(
     provider: Provider = typer.Option(Provider.all, help="Providers to query."),
     codex_home: Path | None = typer.Option(None, help="Override CODEX_HOME."),
     claude_home: Path | None = typer.Option(None, help="Override CLAUDE_CONFIG_DIR."),
+    antigravity_home: Path | None = typer.Option(None, help="Override the Antigravity directory."),
     pi_home: Path | None = typer.Option(None, help="Override PI_CODING_AGENT_DIR."),
     omp_home: Path | None = typer.Option(None, help="Override the omp agent directory."),
     cache_dir: Path | None = typer.Option(
@@ -182,7 +189,7 @@ def main(
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise typer.BadParameter("Unknown timezone; use an IANA name such as Asia/Tokyo.") from exc
     ctx.obj = Settings(
-        Paths.discover(codex_home, claude_home, pi_home, omp_home, cache_dir),
+        Paths.discover(codex_home, claude_home, pi_home, omp_home, cache_dir, antigravity_home),
         list(ALL_PROVIDERS) if provider == Provider.all else [provider.value],
         zone,
         as_json,
@@ -248,7 +255,7 @@ def doctor(
                 coverage = index.sync(settings.paths, settings.providers)
     versions = {}
     for provider in settings.providers:
-        executable = shutil.which(provider)
+        executable = shutil.which(EXECUTABLES.get(provider, provider))
         version = None
         if executable:
             try:
@@ -267,6 +274,7 @@ def doctor(
         versions[provider] = {"executable": executable, "version": version}
     codex_mode, codex_source = codex_auth_inspection(settings.paths.codex)
     claude_mode, claude_source = claude_auth_inspection(settings.paths.claude)
+    agy_mode, agy_source = antigravity_auth_inspection(settings.paths.antigravity)
     result = envelope(
         doctor={
             "version": __version__,
@@ -280,6 +288,7 @@ def doctor(
             "auth": {
                 "codex": {"auth_mode": codex_mode, "source": codex_source},
                 "claude": {"auth_mode": claude_mode, "source": claude_source},
+                "antigravity": {"auth_mode": agy_mode, "source": agy_source},
             },
             "claude_credentials_file_present": (
                 settings.paths.claude / ".credentials.json"

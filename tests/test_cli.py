@@ -2,7 +2,17 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import agent_session, agent_usage, claude_usage, codex_meta, codex_usage, write_rows
+from conftest import (
+    agent_session,
+    agent_usage,
+    antigravity_gen_blob,
+    antigravity_usage_blob,
+    claude_usage,
+    codex_meta,
+    codex_usage,
+    write_antigravity_db,
+    write_rows,
+)
 from typer.testing import CliRunner
 
 from agent_usage.cli import app
@@ -71,6 +81,8 @@ def options(paths):
         str(paths.codex),
         "--claude-home",
         str(paths.claude),
+        "--antigravity-home",
+        str(paths.antigravity),
         "--pi-home",
         str(paths.pi),
         "--omp-home",
@@ -99,7 +111,11 @@ def test_offline_default_handles_missing_accounts_and_empty_logs(paths):
     result = runner.invoke(app, [*options(paths), "--offline", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    expected = {"codex": "unavailable", "claude": "unavailable"}
+    expected = {
+        "codex": "unavailable",
+        "claude": "unavailable",
+        "antigravity": "unavailable",
+    }
     assert {a["provider"]: a["status"] for a in data["quota"]["accounts"]} == expected
     assert data["tokens"]["totals"]["events"] == 0
 
@@ -229,16 +245,21 @@ def test_doctor_reports_non_subscription_auth_without_exposing_secrets(paths, mo
             }
         )
     )
+    (paths.antigravity / "settings.json").write_text(json.dumps({"modelProvider": "gemini"}))
+    monkeypatch.setenv("GEMINI_API_KEY", "test-agy-sentinel")
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gemini-proxy.example.test")
     result = runner.invoke(app, [*options(paths), "doctor", "--json"])
     assert result.exit_code == 0, result.output
     doctor = json.loads(result.output)["doctor"]
     assert doctor["auth"] == {
         "codex": {"auth_mode": "apiKey", "source": "codex-auth-file"},
         "claude": {"auth_mode": "customGateway", "source": "claude-settings"},
+        "antigravity": {"auth_mode": "customGateway", "source": "antigravity-env"},
     }
     assert doctor["claude_credentials_file_present"] is False
     assert "test-codex-sentinel" not in result.output
     assert "test-claude-sentinel" not in result.output
+    assert "test-agy-sentinel" not in result.output
 
 
 def test_gemini_tokens_and_costs_across_all_four_harnesses(paths, monkeypatch):
@@ -275,6 +296,29 @@ def test_gemini_tokens_and_costs_across_all_four_harnesses(paths, monkeypatch):
         [agent_session("omp-s"), omp_gem],
     )
 
+    # 5. Antigravity conversation database
+    now_sec = int((datetime.now(UTC) - timedelta(hours=1)).timestamp())
+    write_antigravity_db(
+        paths.antigravity / "conversations/agy-gem.db",
+        generations=[
+            (
+                0,
+                antigravity_gen_blob(
+                    model="gemini-2.5-flash",
+                    usage=antigravity_usage_blob(
+                        fresh_input=400,
+                        cache_read=600,
+                        cache_write=0,
+                        total_output=200,
+                        visible_output=150,
+                        reasoning=50,
+                    ),
+                    timestamp=(now_sec, 0),
+                ),
+            )
+        ],
+    )
+
     monkeypatch.setattr(
         "agent_usage.cli.load_pricing",
         lambda *args, **kwargs: Pricing(
@@ -295,14 +339,15 @@ def test_gemini_tokens_and_costs_across_all_four_harnesses(paths, monkeypatch):
     result = runner.invoke(app, [*options(paths), "tokens", "--all", "--by", "model", "--json"])
     assert result.exit_code == 0, result.output
     tokens = json.loads(result.output)["tokens"]
-    assert tokens["totals"]["events"] == 4
-    assert tokens["totals"]["estimated_cost"]["priced_events"] == 4
+    assert tokens["totals"]["events"] == 5
+    assert tokens["totals"]["estimated_cost"]["priced_events"] == 5
     assert tokens["totals"]["estimated_cost"]["amount"] is not None
     assert tokens["totals"]["estimated_cost"]["unpriced_details"] == []
     grouped = {(g["provider"], g["group"]) for g in tokens["groups"]}
     assert grouped == {
         ("codex", "google/gemini-2.5-flash"),
         ("claude", "gemini-2.5-flash"),
+        ("antigravity", "gemini-2.5-flash"),
         ("pi", "google/gemini-2.5-flash"),
         ("omp", "openrouter/google/gemini-2.5-flash"),
     }

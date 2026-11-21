@@ -918,6 +918,9 @@
             "omp": {
               "type": "string"
             },
+            "antigravity": {
+              "type": "string"
+            },
             "cache": {
               "type": "string"
             }

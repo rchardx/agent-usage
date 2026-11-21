@@ -12,6 +12,7 @@ from pathlib import Path
 from . import USER_AGENT
 from .cache import write_json
 from .models import utc_now
+from .parsers import ANTIGRAVITY_EFFORTS
 
 SOURCE = "https://models.dev/api.json?type=all"
 CACHE_SECONDS = 86400
@@ -64,6 +65,22 @@ def _strip_models_prefix(model: str) -> str:
     return model
 
 
+def _strip_effort_suffix(model: str) -> str | None:
+    for effort in ANTIGRAVITY_EFFORTS:
+        suffix = f"-{effort}"
+        if model.endswith(suffix) and len(model) > len(suffix):
+            return model.removesuffix(suffix)
+    return None
+
+
+def _has_catalog_cost(catalog_provider: str | None, model_id: str, models: dict) -> bool:
+    if catalog_provider is None:
+        return False
+    entry = models.get(catalog_provider, {}).get(model_id)
+    cost = entry.get("cost") if isinstance(entry, dict) else None
+    return isinstance(cost, dict) and bool(cost)
+
+
 def _catalog_key(prefix: str, models: dict) -> str | None:
     if prefix in models:
         return prefix
@@ -80,8 +97,7 @@ def _first_party_match(model_id: str, models: dict) -> tuple[str, str] | None:
     return None
 
 
-def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None, str]:
-    """Catalog provider and model id for an agent event; no alias guessing."""
+def _resolve_exact(provider: str, model: str, models: dict) -> tuple[str | None, str]:
     clean = _strip_models_prefix(model)
     prefix, separator, rest = clean.partition("/")
     if separator and rest:
@@ -119,7 +135,39 @@ def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None
                 if clean in models.get(google_channel, {}):
                     return google_channel, clean
         return default_catalog, clean
+    if provider == "antigravity":
+        if clean.startswith("gemini-"):
+            for google_channel in ("google", "google-vertex"):
+                if clean in models.get(google_channel, {}):
+                    return google_channel, clean
+            return "google", clean
+        if clean.startswith("claude-"):
+            for anthropic_channel in ("anthropic", "google-vertex-anthropic"):
+                if clean in models.get(anthropic_channel, {}):
+                    return anthropic_channel, clean
+            return "anthropic", clean
+        if clean.startswith(("gpt-", "o1", "o3", "o4")):
+            return "openai", clean
     return None, clean
+
+
+def resolve_catalog(provider: str, model: str, models: dict) -> tuple[str | None, str]:
+    """Catalog provider and model id; Antigravity effort suffixes fall back to priced base."""
+    exact_provider, exact_id = _resolve_exact(provider, model, models)
+    if _has_catalog_cost(exact_provider, exact_id, models):
+        return exact_provider, exact_id
+    if provider == "antigravity":
+        if exact_provider is not None and exact_id in models.get(exact_provider, {}):
+            base_id = _strip_effort_suffix(exact_id)
+            if base_id is not None and _has_catalog_cost(exact_provider, base_id, models):
+                return exact_provider, base_id
+            return exact_provider, exact_id
+        stripped = _strip_effort_suffix(model)
+        if stripped is not None:
+            base_provider, base_id = _resolve_exact(provider, stripped, models)
+            if _has_catalog_cost(base_provider, base_id, models):
+                return base_provider, base_id
+    return exact_provider, exact_id
 
 
 def _has_cache_write_rate(base_cost: dict) -> bool:

@@ -1,6 +1,7 @@
 import io
 import json
 import queue
+import subprocess
 import time
 import urllib.error
 from importlib.metadata import version
@@ -11,10 +12,13 @@ from agent_usage.models import ProbeError
 from agent_usage.providers import (
     CodexRPC,
     NoRedirect,
+    antigravity_auth_inspection,
     claude_auth_inspection,
     codex_auth_inspection,
+    fetch_antigravity,
     fetch_claude,
     fetch_codex,
+    normalize_antigravity,
     normalize_claude,
     normalize_codex,
 )
@@ -421,3 +425,270 @@ def test_claude_non_subscription_modes_skip_network_and_redact_secrets(
         "must-never-execute-helper-sentinel",
     ):
         assert secret not in serialized
+
+
+def _agy_usage_envelope(**overrides):
+    """Redacted structure captured from `agy --print /usage --output-format json` (v1.5.14)."""
+    return {
+        "conversation_id": "",
+        "status": "SUCCESS",
+        "response": (
+            "Gemini Models\tWeekly Limit Remaining\t100%\t2026-10-08T00:00:00Z\n"
+            "Gemini Models\tFive Hour Limit Remaining\t76%\t2026-10-01T05:00:00Z\n"
+            "Claude and GPT models\tWeekly Limit Remaining\t88%\t2026-10-08T00:00:00Z\n"
+            "Claude and GPT models\tFive Hour Limit Remaining\t50%\t2026-10-01T05:00:00Z\n"
+        ),
+        "duration_seconds": 0,
+        "num_turns": 0,
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thinking_tokens": 0,
+            "cache_read_tokens": 0,
+            "total_tokens": 0,
+        },
+        "command": {
+            "name": "usage",
+            "data": {
+                "description": "Within each group, models share a weekly limit and a 5-hour limit.",
+                "groups": [
+                    {
+                        "name": "Gemini Models",
+                        "description": (
+                            "Models within this group: Gemini 4 Carbon, Gemini 3.8 Flash"
+                        ),
+                        "buckets": [
+                            {
+                                "id": "gemini-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "description": "Weekly refresh.",
+                                "window": "weekly",
+                                "remaining_fraction": 1.0,
+                                "reset_time": "2026-10-08T00:00:00Z",
+                            },
+                            {
+                                "id": "gemini-5h",
+                                "name": "Five Hour Limit Remaining",
+                                "description": "5-hour refresh.",
+                                "window": "5h",
+                                "remaining_fraction": 0.755,
+                                "reset_time": "2026-10-01T05:00:00Z",
+                            },
+                        ],
+                    },
+                    {
+                        "name": "Claude and GPT models",
+                        "description": "Models within this group: Claude Opus 5.5, GPT-OSS 120B",
+                        "buckets": [
+                            {
+                                "id": "3p-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "description": "Weekly refresh.",
+                                "window": "weekly",
+                                "remaining_fraction": 0.875,
+                                "reset_time": "2026-10-08T00:00:00Z",
+                            },
+                            {
+                                "id": "3p-5h",
+                                "name": "Five Hour Limit Remaining",
+                                "description": "5-hour refresh.",
+                                "window": "5h",
+                                "remaining_fraction": 0.5,
+                                "reset_time": "2026-10-01T05:00:00Z",
+                            },
+                            {
+                                "id": "future-bucket",
+                                "name": "Unrecognized",
+                                "window": "5h",
+                                "remaining_fraction": 0.1,
+                                "reset_time": "unsupported timestamp",
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+        **overrides,
+    }
+
+
+def _agy_credits_envelope(remaining=250):
+    """Redacted structure captured from `agy --print /credits --output-format json` (v1.5.14)."""
+    return {
+        "conversation_id": "",
+        "status": "SUCCESS",
+        "response": f"Remaining credits\t{remaining}\nUpgrade\thttps://antigravity.google/g1-upgrade\n",
+        "duration_seconds": 0,
+        "num_turns": 0,
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thinking_tokens": 0,
+            "cache_read_tokens": 0,
+            "total_tokens": 0,
+        },
+        "command": {
+            "name": "credits",
+            "data": {
+                "remaining_credits": remaining,
+                "upgrade_uri": "https://antigravity.google/g1-upgrade",
+            },
+        },
+    }
+
+
+def test_antigravity_normalizes_recognized_windows_credits_and_filters_unknown_buckets():
+    report = normalize_antigravity(
+        _agy_usage_envelope()["command"]["data"],
+        _agy_credits_envelope(250)["command"]["data"],
+    )
+    assert report.provider == "antigravity"
+    assert report.plan is None
+    assert report.auth_mode == "google"
+    assert [(w.bucket, w.label, w.used_percent, w.duration_minutes) for w in report.windows] == [
+        ("gemini-weekly", "Gemini", 0.0, 10080),
+        ("gemini-5h", "Gemini", 24.5, 300),
+        ("3p-weekly", "Claude & GPT", 12.5, 10080),
+        ("3p-5h", "Claude & GPT", 50.0, 300),
+    ]
+    assert len(report.credits) == 1
+    assert report.credits[0].bucket == "ai_credits"
+    assert report.credits[0].balance == "250"
+    assert report.credits[0].unit == "provider_units_unverified"
+    assert "future-bucket" not in json.dumps(report.to_dict())
+
+    # Unparseable or missing credit payloads must not discard valid /usage windows.
+    for bad_credits in ({"remaining_credits": "unparseable"}, {"remaining_credits": -1}, {}):
+        isolated = normalize_antigravity(_agy_usage_envelope()["command"]["data"], bad_credits)
+        assert len(isolated.windows) == 4
+        assert isolated.credits == []
+        assert isolated.warnings == ["AI credits status unavailable."]
+
+
+def test_antigravity_cli_invocation_handles_credits_fallback_and_sanitizes_errors(
+    paths, monkeypatch
+):
+    settings_path = paths.antigravity / "settings.json"
+    settings_path.write_text(json.dumps({"useG1Credits": False}), encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+        assert cmd[1:3] == ["--settings", str(settings_path)]
+        if "/usage" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(_agy_usage_envelope()), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "credits endpoint unavailable")
+
+    monkeypatch.setattr("agent_usage.providers.subprocess.run", fake_run)
+    report = fetch_antigravity(paths.antigravity)
+    assert len(calls) == 2
+    assert report.windows[1].used_percent == 24.5
+    assert report.credits == []
+    assert "AI credits status unavailable." in report.warnings
+    assert any("OS keyring" in w for w in report.warnings)
+
+    # Reject any response that unexpectedly executed an inference turn.
+    monkeypatch.setattr(
+        "agent_usage.providers.subprocess.run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, json.dumps(_agy_usage_envelope(num_turns=1)), ""
+        ),
+    )
+    with pytest.raises(ProbeError, match="unsupported response"):
+        fetch_antigravity(paths.antigravity)
+
+    def unauth_run(cmd, **kwargs):
+        err = {"status": "ERROR", "error": "authentication required for private-user@example.test"}
+        return subprocess.CompletedProcess(cmd, 1, json.dumps(err), "secret-agy-stderr")
+
+    monkeypatch.setattr("agent_usage.providers.subprocess.run", unauth_run)
+    with pytest.raises(ProbeError, match="authentication required") as exc_info:
+        fetch_antigravity(paths.antigravity)
+    assert "private-user@example.test" not in str(exc_info.value)
+    assert "secret-agy-stderr" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("env_pairs", "settings_data", "config_data", "expected_mode", "expected_source"),
+    [
+        (
+            [("GEMINI_API_KEY", "test-gem-sentinel")],
+            {"modelProvider": "gemini"},
+            {},
+            "apiKey",
+            "antigravity-settings",
+        ),
+        (
+            [
+                ("GEMINI_API_KEY", "test-gem-gw-sentinel"),
+                ("GOOGLE_GEMINI_BASE_URL", "https://proxy.example.test/v1beta"),
+            ],
+            {"modelProvider": "gemini"},
+            {},
+            "customGateway",
+            "antigravity-env",
+        ),
+        (
+            [],
+            {"gcp": {"project": "example-gcp-project", "location": "global"}},
+            {},
+            "gcp",
+            "antigravity-settings",
+        ),
+        (
+            [],
+            {"auth": {"type": "agent-platform"}},
+            {},
+            "gcp",
+            "antigravity-settings",
+        ),
+        (
+            [("AGY_ADC_AUTH", "true")],
+            {},
+            {},
+            "gcp",
+            "antigravity-env",
+        ),
+        (
+            [("GOOGLE_GENAI_USE_VERTEXAI", "1")],
+            {},
+            {},
+            "gcp",
+            "antigravity-env",
+        ),
+        (
+            [],
+            {},
+            {"userSettings": {"enableAdc": True}},
+            "gcp",
+            "antigravity-config",
+        ),
+    ],
+)
+def test_antigravity_non_subscription_modes_skip_cli_and_redact_secrets(
+    paths, monkeypatch, env_pairs, settings_data, config_data, expected_mode, expected_source
+):
+    if settings_data:
+        (paths.antigravity / "settings.json").write_text(
+            json.dumps(settings_data), encoding="utf-8"
+        )
+    if config_data:
+        cfg_dir = paths.antigravity.parent / "config"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "config.json").write_text(json.dumps(config_data), encoding="utf-8")
+    for key, value in env_pairs:
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(
+        "agent_usage.providers.subprocess.run",
+        lambda *a, **kw: pytest.fail("CLI subprocess attempted in non-subscription mode"),
+    )
+    report = fetch_antigravity(paths.antigravity)
+    serialized = json.dumps(report.to_dict())
+    assert report.status == "unavailable"
+    assert report.auth_mode == expected_mode
+    assert report.source == expected_source
+    assert report.error is None
+    assert antigravity_auth_inspection(paths.antigravity) == (expected_mode, expected_source)
+    assert "test-gem-sentinel" not in serialized
+    assert "test-gem-gw-sentinel" not in serialized

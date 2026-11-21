@@ -1,6 +1,7 @@
 """Read-only provider adapters; no inference or reset redemption."""
 
 import json
+import math
 import os
 import queue
 import subprocess
@@ -182,6 +183,10 @@ def _has_value(value: Any) -> TypeGuard[str]:
 
 def _is_truthy(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in ("1", "true", "yes")
+
+
+def _finite_number(value: Any) -> TypeGuard[int | float]:
+    return type(value) in (int, float) and math.isfinite(value)
 
 
 def non_subscription_account(
@@ -505,3 +510,218 @@ def fetch_claude(home: Path, timeout: float = 10) -> AccountReport:
         raise ProbeError(
             "Claude usage request failed or returned an unsupported response."
         ) from exc
+
+
+def _json_dict(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def antigravity_override_mode(home: Path) -> tuple[str, str] | None:
+    for env_flag in ("AGY_ADC_AUTH", "GOOGLE_GENAI_USE_VERTEXAI"):
+        if _is_truthy(os.environ.get(env_flag)):
+            return "gcp", "antigravity-env"
+    settings = _json_dict(home / "settings.json")
+    raw_env = settings.get("env")
+    settings_env = raw_env if isinstance(raw_env, dict) else {}
+    for env_flag in ("AGY_ADC_AUTH", "GOOGLE_GENAI_USE_VERTEXAI"):
+        if _is_truthy(settings_env.get(env_flag)):
+            return "gcp", "antigravity-settings"
+    raw_auth = settings.get("auth")
+    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
+    if auth_cfg.get("type") == "agent-platform":
+        return "gcp", "antigravity-settings"
+    gcp_cfg = settings.get("gcp")
+    if isinstance(gcp_cfg, dict) and (
+        _has_value(gcp_cfg.get("project")) or _has_value(gcp_cfg.get("projectId"))
+    ):
+        return "gcp", "antigravity-settings"
+    if settings.get("modelProvider") == "gemini" or auth_cfg.get("type") == "gemini-api-key":
+        env_base = os.environ.get("GOOGLE_GEMINI_BASE_URL")
+        cfg_base = settings_env.get("GOOGLE_GEMINI_BASE_URL")
+        base_url = env_base if _has_value(env_base) else cfg_base if _has_value(cfg_base) else ""
+        if base_url:
+            host = urllib.parse.urlsplit(base_url.strip()).hostname
+            if host and host.lower() != "generativelanguage.googleapis.com":
+                source = "antigravity-env" if _has_value(env_base) else "antigravity-settings"
+                return "customGateway", source
+        return "apiKey", "antigravity-settings"
+    config_candidates = [home / "config.json"]
+    if home.name.startswith("antigravity"):
+        config_candidates.append(home.parent / "config" / "config.json")
+    for cfg_path in config_candidates:
+        user_settings = _json_dict(cfg_path).get("userSettings")
+        if isinstance(user_settings, dict) and user_settings.get("enableAdc") is True:
+            return "gcp", "antigravity-config"
+    return None
+
+
+def antigravity_auth_inspection(home: Path) -> tuple[str | None, str | None]:
+    override = antigravity_override_mode(home)
+    if override is not None:
+        return override
+    settings = _json_dict(home / "settings.json")
+    raw_auth = settings.get("auth")
+    if isinstance(raw_auth, dict) and raw_auth.get("type") == "oauth-personal":
+        return "google", "antigravity-settings"
+    return None, None
+
+
+def antigravity_non_subscription_mode(home: Path) -> tuple[str, str] | None:
+    mode, source = antigravity_auth_inspection(home)
+    if mode and source and mode != "google":
+        return mode, source
+    return None
+
+
+def _run_agy_command(command_name: str, home: Path, timeout: float) -> dict[str, Any]:
+    # Requires agy >= 1.5.14 so --print handles /usage and /credits without a model turn.
+    cmd_args = ["agy"]
+    settings_file = home / "settings.json"
+    if settings_file.is_file():
+        cmd_args.extend(["--settings", str(settings_file)])
+    cmd_args.extend(["--print", f"/{command_name}", "--output-format", "json"])
+    try:
+        response = subprocess.run(
+            cmd_args,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+            check=False,
+        )
+    except OSError as exc:
+        raise ProbeError("Cannot start agy; install Antigravity CLI and check PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ProbeError(f"Antigravity /{command_name} timed out.") from exc
+    try:
+        payload = json.loads(response.stdout)
+    except ValueError:
+        payload = None
+    if (
+        response.returncode != 0
+        or not isinstance(payload, dict)
+        or payload.get("status") != "SUCCESS"
+    ):
+        err_text = payload.get("error") if isinstance(payload, dict) else ""
+        combined = f"{err_text}\n{response.stderr}".lower()
+        if any(
+            phrase in combined
+            for phrase in (
+                "authentication required",
+                "not authenticated",
+                "sign in",
+                "login required",
+                "unauthenticated",
+            )
+        ):
+            raise ProbeError("Antigravity authentication required. Sign in with agy.")
+        if "rate limit" in combined or "http 429" in combined or " 429" in combined:
+            raise ProbeError(f"Antigravity /{command_name} rate limited; retry later.")
+        raise ProbeError(f"Antigravity /{command_name} failed. Check agy login and CLI version.")
+    cmd = payload.get("command")
+    usage = payload.get("usage")
+    if (
+        not isinstance(cmd, dict)
+        or cmd.get("name") != command_name
+        or not isinstance(cmd.get("data"), dict)
+        or payload.get("num_turns", 0) != 0
+        or (isinstance(usage, dict) and usage.get("total_tokens", 0) != 0)
+    ):
+        raise ProbeError(f"Antigravity /{command_name} returned an unsupported response.")
+    return cmd["data"]
+
+
+def normalize_antigravity(
+    usage_data: dict[str, Any], credits_data: dict[str, Any] | None = None
+) -> AccountReport:
+    raw_plan = usage_data.get("plan")
+    report = AccountReport(
+        provider="antigravity",
+        source="agy-cli",
+        observed_at=utc_now(),
+        plan=raw_plan.strip() if _has_value(raw_plan) else None,
+        auth_mode="google",
+    )
+    groups = usage_data.get("groups")
+    if not isinstance(groups, list):
+        raise ValueError("Invalid Antigravity quota groups")
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        buckets = group.get("buckets")
+        if not isinstance(buckets, list):
+            continue
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            bucket_id = bucket.get("id")
+            if not isinstance(bucket_id, str) or bucket_id not in WINDOW_LABELS["antigravity"]:
+                continue
+            rem = bucket.get("remaining_fraction")
+            if rem is None:
+                used_pct: float | None = None
+            elif _finite_number(rem) and 0 <= rem <= 1:
+                used_pct = round((1.0 - float(rem)) * 100, 2)
+            else:
+                raise ValueError("Invalid remaining_fraction")
+            win_name = str(bucket.get("window") or bucket_id)
+            duration = 300 if win_name == "5h" else 10080 if win_name == "weekly" else None
+            report.windows.append(
+                QuotaWindow(
+                    bucket=bucket_id,
+                    window=win_name,
+                    used_percent=used_pct,
+                    resets_at=iso_time(bucket.get("reset_time")),
+                    duration_minutes=duration,
+                    label=WINDOW_LABELS["antigravity"][bucket_id],
+                )
+            )
+    if credits_data is not None:
+        rem_credits = credits_data.get("remaining_credits")
+        if "remaining_credits" not in credits_data:
+            report.warnings.append("AI credits status unavailable.")
+        elif rem_credits is not None:
+            if not _finite_number(rem_credits) or rem_credits < 0:
+                report.warnings.append("AI credits status unavailable.")
+            else:
+                report.credits.append(
+                    CreditBalance(
+                        bucket="ai_credits",
+                        balance=str(rem_credits),
+                        label=CREDIT_LABELS["antigravity"]["ai_credits"],
+                    )
+                )
+    return report
+
+
+def fetch_antigravity(home: Path, timeout: float = 10) -> AccountReport:
+    non_sub = antigravity_non_subscription_mode(home)
+    if non_sub is not None:
+        return non_subscription_account("antigravity", non_sub[1], non_sub[0])
+    deadline = time.monotonic() + timeout
+    usage_data = _run_agy_command("usage", home, timeout)
+    credits_data: dict[str, Any] | None = None
+    credits_warning: str | None = None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        credits_warning = "Skipped AI credits check after quota query consumed timeout."
+    else:
+        try:
+            credits_data = _run_agy_command("credits", home, remaining)
+        except ProbeError:
+            credits_warning = "AI credits status unavailable."
+    report = normalize_antigravity(usage_data, credits_data)
+    if credits_warning and credits_warning not in report.warnings:
+        report.warnings.append(credits_warning)
+    default_cli_home = Path("~/.gemini/antigravity-cli").expanduser().resolve()
+    if home.resolve() != default_cli_home:
+        report.warnings.append(
+            "Antigravity OAuth sessions use the OS keyring; "
+            "--antigravity-home only overrides local settings and logs."
+        )
+    return report

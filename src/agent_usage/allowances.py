@@ -10,11 +10,18 @@ WINDOW_LABELS = {
         "session": "All models",
         "weekly_all": "All models",
     },
+    "antigravity": {
+        "gemini-5h": "Gemini",
+        "gemini-weekly": "Gemini",
+        "3p-5h": "Claude & GPT",
+        "3p-weekly": "Claude & GPT",
+    },
 }
 
 CREDIT_LABELS = {
     "codex": {"codex": "Codex"},
     "claude": {"extra_usage": "Extra usage", "spend": "Spend balance"},
+    "antigravity": {"ai_credits": "AI credits"},
 }
 
 NON_SUBSCRIPTION_LABELS = {
