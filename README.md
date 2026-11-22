@@ -1,5 +1,11 @@
 # agent-usage
 
+[![CI](https://img.shields.io/github/actions/workflow/status/rchardx/agent-usage/ci.yml?branch=main&style=flat-square&label=CI&logo=githubactions&logoColor=white)](https://github.com/rchardx/agent-usage/actions/workflows/ci.yml?query=branch%3Amain)
+[![Nightly](https://img.shields.io/github/actions/workflow/status/rchardx/agent-usage/nightly.yml?branch=main&style=flat-square&label=Nightly&logo=githubactions&logoColor=white)](https://github.com/rchardx/agent-usage/actions/workflows/nightly.yml)
+[![Nightly Release](https://img.shields.io/github/release-date-pre/rchardx/agent-usage?style=flat-square&label=Nightly%20Release&logo=github&logoColor=white&color=0969da)](https://github.com/rchardx/agent-usage/releases/tag/nightly)
+[![Python](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Frchardx%2Fagent-usage%2Fmain%2Fpyproject.toml&style=flat-square&label=Python&logo=python&logoColor=white&color=3776ab)](#install)
+[![License](https://img.shields.io/github/license/rchardx/agent-usage?style=flat-square&label=License&color=0969da)](LICENSE)
+
 A local-first CLI for account allowances, token usage and API-equivalent cost
 estimates across Codex, Claude Code, Antigravity, pi and omp.
 
